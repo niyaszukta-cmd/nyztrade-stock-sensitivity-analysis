@@ -11,10 +11,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
 import pytz
 from pytrends.request import TrendReq
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import json
+import os
 warnings.filterwarnings('ignore')
 
 # Indian Standard Time
 IST = pytz.timezone('Asia/Kolkata')
+
+# Historical data storage directory
+HISTORICAL_DATA_DIR = "historical_sentiment_data"
+if not os.path.exists(HISTORICAL_DATA_DIR):
+    os.makedirs(HISTORICAL_DATA_DIR)
 
 # Page configuration
 st.set_page_config(
@@ -551,6 +560,313 @@ def get_viral_stock_recommendations(news_sentiment_data, trending_data, top_n=10
     viral_scores.sort(key=lambda x: x['viral_score'], reverse=True)
     
     return viral_scores[:top_n]
+
+# Historical Analysis Functions for Backtesting
+def save_sentiment_snapshot(stock_sentiment_data):
+    """Save current sentiment data with IST timestamp for historical analysis"""
+    try:
+        ist_now = datetime.now(IST)
+        timestamp = ist_now.strftime('%Y%m%d_%H%M%S')
+        date_key = ist_now.strftime('%Y%m%d')
+        
+        # Create snapshot
+        snapshot = {
+            'timestamp': ist_now.isoformat(),
+            'timestamp_readable': ist_now.strftime('%Y-%m-%d %H:%M:%S IST'),
+            'hour': ist_now.hour,
+            'stocks': {}
+        }
+        
+        # Store sentiment for each stock
+        for stock in stock_sentiment_data:
+            symbol = stock['symbol']
+            snapshot['stocks'][symbol] = {
+                'company': stock['company'],
+                'sentiment_score': stock['sentiment_score'],
+                'news_count': stock['news_count'],
+                'confidence': stock.get('confidence', 0),
+                'pos_score': stock.get('pos_score', 0),
+                'neg_score': stock.get('neg_score', 0)
+            }
+        
+        # Save to file
+        filename = os.path.join(HISTORICAL_DATA_DIR, f"snapshot_{timestamp}.json")
+        with open(filename, 'w') as f:
+            json.dump(snapshot, f, indent=2)
+        
+        print(f"Saved sentiment snapshot: {filename}")
+        return True
+        
+    except Exception as e:
+        print(f"Error saving snapshot: {str(e)}")
+        return False
+
+def load_historical_data(days=7):
+    """Load historical sentiment data for past N days"""
+    try:
+        cutoff_date = datetime.now(IST) - timedelta(days=days)
+        historical_data = []
+        
+        # Read all snapshot files
+        if os.path.exists(HISTORICAL_DATA_DIR):
+            files = sorted([f for f in os.listdir(HISTORICAL_DATA_DIR) if f.endswith('.json')])
+            
+            for filename in files:
+                filepath = os.path.join(HISTORICAL_DATA_DIR, filename)
+                try:
+                    with open(filepath, 'r') as f:
+                        snapshot = json.load(f)
+                        snapshot_time = datetime.fromisoformat(snapshot['timestamp'])
+                        
+                        # Only include data from past N days
+                        if snapshot_time >= cutoff_date:
+                            historical_data.append(snapshot)
+                except:
+                    continue
+        
+        print(f"Loaded {len(historical_data)} historical snapshots")
+        return historical_data
+        
+    except Exception as e:
+        print(f"Error loading historical data: {str(e)}")
+        return []
+
+def get_historical_price_data(symbol, days=7):
+    """Get hourly price data for past week"""
+    try:
+        end_date = datetime.now(IST)
+        start_date = end_date - timedelta(days=days)
+        
+        stock = yf.Ticker(symbol)
+        # Get hourly data
+        hist = stock.history(start=start_date, end=end_date, interval='1h')
+        
+        if not hist.empty:
+            # Convert to IST
+            hist.index = hist.index.tz_convert(IST)
+            return hist
+        return None
+        
+    except Exception as e:
+        print(f"Error fetching historical price for {symbol}: {str(e)}")
+        return None
+
+def create_backtest_analysis(symbol, historical_sentiment, historical_price):
+    """Correlate sentiment changes with price movements for backtesting"""
+    try:
+        analysis = {
+            'symbol': symbol,
+            'correlations': [],
+            'signals': [],
+            'performance_metrics': {}
+        }
+        
+        # Extract sentiment timeline for this stock
+        sentiment_timeline = []
+        for snapshot in historical_sentiment:
+            if symbol in snapshot['stocks']:
+                sentiment_timeline.append({
+                    'timestamp': datetime.fromisoformat(snapshot['timestamp']),
+                    'sentiment': snapshot['stocks'][symbol]['sentiment_score'],
+                    'confidence': snapshot['stocks'][symbol].get('confidence', 0),
+                    'news_count': snapshot['stocks'][symbol].get('news_count', 0)
+                })
+        
+        if not sentiment_timeline or historical_price is None or historical_price.empty:
+            return None
+        
+        # Create DataFrame for easier analysis
+        sentiment_df = pd.DataFrame(sentiment_timeline)
+        sentiment_df.set_index('timestamp', inplace=True)
+        
+        # Merge with price data (align timestamps)
+        combined = pd.merge_asof(
+            historical_price.reset_index().rename(columns={'Datetime': 'timestamp'}),
+            sentiment_df.reset_index(),
+            on='timestamp',
+            direction='nearest',
+            tolerance=pd.Timedelta('2h')
+        )
+        
+        if not combined.empty:
+            # Calculate correlations
+            price_sentiment_corr = combined['Close'].corr(combined['sentiment'])
+            volume_sentiment_corr = combined['Volume'].corr(combined['sentiment'])
+            
+            analysis['correlations'] = {
+                'price_sentiment': price_sentiment_corr,
+                'volume_sentiment': volume_sentiment_corr
+            }
+            
+            # Identify sentiment-based signals
+            combined['sentiment_change'] = combined['sentiment'].diff()
+            combined['price_change'] = combined['Close'].pct_change() * 100
+            
+            # Signal: Strong positive sentiment shift (>0.1 increase)
+            strong_positive_signals = combined[combined['sentiment_change'] > 0.1]
+            # Signal: Strong negative sentiment shift (<-0.1 decrease)
+            strong_negative_signals = combined[combined['sentiment_change'] < -0.1]
+            
+            for _, row in strong_positive_signals.iterrows():
+                analysis['signals'].append({
+                    'timestamp': row['timestamp'].strftime('%Y-%m-%d %H:%M IST') if isinstance(row['timestamp'], datetime) else str(row['timestamp']),
+                    'type': 'BULLISH',
+                    'sentiment_change': row['sentiment_change'],
+                    'price_at_signal': row['Close'],
+                    'price_change_1h': combined.loc[combined['timestamp'] > row['timestamp'], 'price_change'].iloc[0] if len(combined.loc[combined['timestamp'] > row['timestamp']]) > 0 else None
+                })
+            
+            for _, row in strong_negative_signals.iterrows():
+                analysis['signals'].append({
+                    'timestamp': row['timestamp'].strftime('%Y-%m-%d %H:%M IST') if isinstance(row['timestamp'], datetime) else str(row['timestamp']),
+                    'type': 'BEARISH',
+                    'sentiment_change': row['sentiment_change'],
+                    'price_at_signal': row['Close'],
+                    'price_change_1h': combined.loc[combined['timestamp'] > row['timestamp'], 'price_change'].iloc[0] if len(combined.loc[combined['timestamp'] > row['timestamp']]) > 0 else None
+                })
+            
+            # Performance metrics
+            analysis['performance_metrics'] = {
+                'total_signals': len(analysis['signals']),
+                'bullish_signals': len([s for s in analysis['signals'] if s['type'] == 'BULLISH']),
+                'bearish_signals': len([s for s in analysis['signals'] if s['type'] == 'BEARISH']),
+                'avg_sentiment': combined['sentiment'].mean(),
+                'sentiment_volatility': combined['sentiment'].std(),
+                'price_volatility': combined['price_change'].std()
+            }
+            
+            return analysis, combined
+        
+        return None, None
+        
+    except Exception as e:
+        print(f"Error in backtest analysis: {str(e)}")
+        return None, None
+
+def visualize_historical_analysis(symbol, company_name, combined_data, analysis):
+    """Create interactive visualization of sentiment vs price over time"""
+    try:
+        # Create figure with secondary y-axis
+        fig = make_subplots(
+            rows=3, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.05,
+            subplot_titles=(
+                f'{company_name} - Price Movement',
+                'Sentiment Score Over Time',
+                'Volume & News Count'
+            ),
+            row_heights=[0.4, 0.3, 0.3]
+        )
+        
+        # Price chart
+        fig.add_trace(
+            go.Scatter(
+                x=combined_data['timestamp'],
+                y=combined_data['Close'],
+                name='Price',
+                line=dict(color='#2E86DE', width=2),
+                hovertemplate='%{y:.2f} INR<br>%{x}<extra></extra>'
+            ),
+            row=1, col=1
+        )
+        
+        # Add buy/sell signals
+        if analysis and 'signals' in analysis:
+            bullish_signals = [s for s in analysis['signals'] if s['type'] == 'BULLISH']
+            bearish_signals = [s for s in analysis['signals'] if s['type'] == 'BEARISH']
+            
+            if bullish_signals:
+                fig.add_trace(
+                    go.Scatter(
+                        x=[pd.to_datetime(s['timestamp']) for s in bullish_signals],
+                        y=[s['price_at_signal'] for s in bullish_signals],
+                        mode='markers',
+                        name='Bullish Signal',
+                        marker=dict(color='green', size=12, symbol='triangle-up'),
+                        hovertemplate='Bullish Signal<br>Price: %{y:.2f}<extra></extra>'
+                    ),
+                    row=1, col=1
+                )
+            
+            if bearish_signals:
+                fig.add_trace(
+                    go.Scatter(
+                        x=[pd.to_datetime(s['timestamp']) for s in bearish_signals],
+                        y=[s['price_at_signal'] for s in bearish_signals],
+                        mode='markers',
+                        name='Bearish Signal',
+                        marker=dict(color='red', size=12, symbol='triangle-down'),
+                        hovertemplate='Bearish Signal<br>Price: %{y:.2f}<extra></extra>'
+                    ),
+                    row=1, col=1
+                )
+        
+        # Sentiment chart
+        fig.add_trace(
+            go.Scatter(
+                x=combined_data['timestamp'],
+                y=combined_data['sentiment'],
+                name='Sentiment',
+                line=dict(color='#10AC84', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(16, 172, 132, 0.2)',
+                hovertemplate='Sentiment: %{y:.3f}<extra></extra>'
+            ),
+            row=2, col=1
+        )
+        
+        # Add sentiment threshold lines
+        fig.add_hline(y=0.3, line_dash="dash", line_color="green", opacity=0.5, row=2, col=1)
+        fig.add_hline(y=-0.3, line_dash="dash", line_color="red", opacity=0.5, row=2, col=1)
+        fig.add_hline(y=0, line_dash="dot", line_color="gray", opacity=0.3, row=2, col=1)
+        
+        # Volume and news count
+        fig.add_trace(
+            go.Bar(
+                x=combined_data['timestamp'],
+                y=combined_data['Volume'],
+                name='Volume',
+                marker_color='#576574',
+                opacity=0.6,
+                hovertemplate='Volume: %{y:,.0f}<extra></extra>'
+            ),
+            row=3, col=1
+        )
+        
+        if 'news_count' in combined_data.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=combined_data['timestamp'],
+                    y=combined_data['news_count'],
+                    name='News Count',
+                    line=dict(color='#EE5A6F', width=2),
+                    yaxis='y4',
+                    hovertemplate='News: %{y}<extra></extra>'
+                ),
+                row=3, col=1
+            )
+        
+        # Update layout
+        fig.update_xaxes(title_text="Time (IST)", row=3, col=1)
+        fig.update_yaxes(title_text="Price (₹)", row=1, col=1)
+        fig.update_yaxes(title_text="Sentiment", row=2, col=1, range=[-1, 1])
+        fig.update_yaxes(title_text="Volume", row=3, col=1)
+        
+        fig.update_layout(
+            height=800,
+            showlegend=True,
+            hovermode='x unified',
+            template='plotly_white',
+            title_text=f"Historical Analysis - {company_name} ({symbol})",
+            title_font_size=20
+        )
+        
+        return fig
+        
+    except Exception as e:
+        print(f"Error creating visualization: {str(e)}")
+        return None
 
 # Stock Data Functions
 @st.cache_data(ttl=1800)  # Cache for 30 minutes
@@ -1142,8 +1458,8 @@ def main():
         st.markdown("### 📊 Dashboard Mode")
         dashboard_mode = st.radio(
             "Select Mode",
-            ["Standard Analysis", "🔥 Viral Content Hunter"],
-            help="Viral mode combines sentiment + Google Trends for YouTube content"
+            ["Standard Analysis", "🔥 Viral Content Hunter", "📈 Historical Backtest"],
+            help="Viral mode: Sentiment + Google Trends | Backtest: Historical sentiment analysis"
         )
         
         sentiment_threshold = st.slider(
@@ -1205,6 +1521,18 @@ def main():
         st.markdown("- **Hashtags (copyable)**")
         st.markdown("- **Description template**")
         st.markdown("- Perfect for YouTube!")
+        
+        st.markdown("---")
+        st.markdown("**📈 Historical Backtest Features:**")
+        st.markdown("- **Hourly sentiment tracking**")
+        st.markdown("- **7-day historical data**")
+        st.markdown("- Price-sentiment correlation")
+        st.markdown("- Trading signal detection")
+        st.markdown("- Interactive charts")
+        st.markdown("- Backtest metrics")
+        st.markdown("- Export for external tools")
+        st.markdown("")
+        st.info("💡 Run hourly to build historical database!")
         
         st.markdown("---")
         st.markdown("**Data Sources (11+):**")
@@ -1394,6 +1722,213 @@ Tags: {tags_string[:200]}...
                 )
         else:
             st.warning("Could not fetch Google Trends data. Showing sentiment analysis only.")
+    
+    # Historical Backtest Mode
+    if dashboard_mode == "📈 Historical Backtest":
+        st.markdown("---")
+        st.subheader("📈 Historical Sentiment Analysis & Backtesting")
+        st.info("⏰ Analyze how sentiment evolved over the past week with hourly timestamps")
+        
+        # Save current snapshot first
+        with st.spinner("Saving current sentiment snapshot..."):
+            save_sentiment_snapshot(ranked_stocks)
+        
+        # Load historical data
+        with st.spinner("Loading historical sentiment data..."):
+            historical_data = load_historical_data(days=7)
+        
+        if not historical_data:
+            st.warning("⚠️ No historical data available yet. Run the dashboard hourly to build historical data!")
+            st.markdown("**How it works:**")
+            st.markdown("- Dashboard saves sentiment snapshot each time you run it")
+            st.markdown("- After running hourly for a few days, you'll see historical trends")
+            st.markdown("- Historical data enables backtesting sentiment vs price correlation")
+        else:
+            st.success(f"✅ Loaded {len(historical_data)} sentiment snapshots from past 7 days")
+            
+            # Show available stocks with sufficient historical data
+            stock_coverage = {}
+            for snapshot in historical_data:
+                for symbol in snapshot.get('stocks', {}).keys():
+                    stock_coverage[symbol] = stock_coverage.get(symbol, 0) + 1
+            
+            # Filter stocks with at least 5 data points
+            eligible_stocks = {k: v for k, v in stock_coverage.items() if v >= 5}
+            
+            if not eligible_stocks:
+                st.warning("Need at least 5 snapshots per stock for backtest analysis. Keep running dashboard!")
+            else:
+                st.markdown(f"### 📊 Stocks with Sufficient Historical Data ({len(eligible_stocks)})")
+                
+                # Let user select stock for detailed analysis
+                stock_options = {symbol: f"{symbol.replace('.NS', '')} ({count} snapshots)" 
+                                for symbol, count in sorted(eligible_stocks.items(), key=lambda x: x[1], reverse=True)[:20]}
+                
+                selected_stock_symbol = st.selectbox(
+                    "Select Stock for Detailed Backtest Analysis",
+                    options=list(stock_options.keys()),
+                    format_func=lambda x: stock_options[x]
+                )
+                
+                if selected_stock_symbol:
+                    with st.spinner(f"Analyzing {selected_stock_symbol}..."):
+                        # Get company name
+                        company_name = selected_stock_symbol.replace('.NS', '')
+                        for stock in ranked_stocks:
+                            if stock['symbol'] == selected_stock_symbol:
+                                company_name = stock['company']
+                                break
+                        
+                        # Fetch historical price data
+                        historical_price = get_historical_price_data(selected_stock_symbol, days=7)
+                        
+                        if historical_price is not None and not historical_price.empty:
+                            # Create backtest analysis
+                            analysis, combined_data = create_backtest_analysis(
+                                selected_stock_symbol,
+                                historical_data,
+                                historical_price
+                            )
+                            
+                            if analysis and combined_data is not None:
+                                # Display metrics
+                                st.markdown("### 📊 Backtest Performance Metrics")
+                                col1, col2, col3, col4 = st.columns(4)
+                                
+                                with col1:
+                                    corr = analysis['correlations']['price_sentiment']
+                                    st.metric(
+                                        "Price-Sentiment Correlation",
+                                        f"{corr:.3f}",
+                                        delta="Strong" if abs(corr) > 0.5 else "Moderate" if abs(corr) > 0.3 else "Weak"
+                                    )
+                                
+                                with col2:
+                                    st.metric(
+                                        "Total Signals",
+                                        analysis['performance_metrics']['total_signals']
+                                    )
+                                
+                                with col3:
+                                    st.metric(
+                                        "Bullish Signals",
+                                        analysis['performance_metrics']['bullish_signals'],
+                                        delta="📈"
+                                    )
+                                
+                                with col4:
+                                    st.metric(
+                                        "Bearish Signals",
+                                        analysis['performance_metrics']['bearish_signals'],
+                                        delta="📉"
+                                    )
+                                
+                                # Additional metrics
+                                col5, col6, col7 = st.columns(3)
+                                with col5:
+                                    st.metric("Avg Sentiment", f"{analysis['performance_metrics']['avg_sentiment']:.3f}")
+                                with col6:
+                                    st.metric("Sentiment Volatility", f"{analysis['performance_metrics']['sentiment_volatility']:.3f}")
+                                with col7:
+                                    st.metric("Price Volatility %", f"{analysis['performance_metrics']['price_volatility']:.2f}")
+                                
+                                # Visualization
+                                st.markdown("### 📈 Interactive Historical Chart")
+                                fig = visualize_historical_analysis(
+                                    selected_stock_symbol,
+                                    company_name,
+                                    combined_data,
+                                    analysis
+                                )
+                                
+                                if fig:
+                                    st.plotly_chart(fig, use_container_width=True)
+                                
+                                # Signal Details
+                                if analysis['signals']:
+                                    st.markdown("### 🎯 Sentiment-Based Trading Signals")
+                                    
+                                    signals_df = pd.DataFrame(analysis['signals'])
+                                    
+                                    # Separate bullish and bearish
+                                    bullish_df = signals_df[signals_df['type'] == 'BULLISH']
+                                    bearish_df = signals_df[signals_df['type'] == 'BEARISH']
+                                    
+                                    col1, col2 = st.columns(2)
+                                    
+                                    with col1:
+                                        if not bullish_df.empty:
+                                            st.markdown("**🟢 Bullish Signals**")
+                                            st.dataframe(
+                                                bullish_df[['timestamp', 'sentiment_change', 'price_at_signal', 'price_change_1h']].round(3),
+                                                use_container_width=True,
+                                                hide_index=True
+                                            )
+                                    
+                                    with col2:
+                                        if not bearish_df.empty:
+                                            st.markdown("**🔴 Bearish Signals**")
+                                            st.dataframe(
+                                                bearish_df[['timestamp', 'sentiment_change', 'price_at_signal', 'price_change_1h']].round(3),
+                                                use_container_width=True,
+                                                hide_index=True
+                                            )
+                                
+                                # Interpretation
+                                st.markdown("### 💡 Backtest Interpretation")
+                                
+                                corr_value = analysis['correlations']['price_sentiment']
+                                
+                                if corr_value > 0.5:
+                                    st.success(f"**Strong Positive Correlation ({corr_value:.3f})**")
+                                    st.markdown("✅ Positive sentiment strongly predicts price increases")
+                                    st.markdown("✅ This stock's price movements align well with news sentiment")
+                                    st.markdown("✅ Sentiment analysis is effective for this stock")
+                                elif corr_value > 0.3:
+                                    st.info(f"**Moderate Positive Correlation ({corr_value:.3f})**")
+                                    st.markdown("📊 Sentiment has some predictive power for price movements")
+                                    st.markdown("📊 Combine with technical indicators for better signals")
+                                elif corr_value < -0.3:
+                                    st.warning(f"**Negative Correlation ({corr_value:.3f})**")
+                                    st.markdown("⚠️ Price moves opposite to sentiment (contrarian indicator)")
+                                    st.markdown("⚠️ Consider counter-trend trading strategies")
+                                else:
+                                    st.warning(f"**Weak Correlation ({corr_value:.3f})**")
+                                    st.markdown("⚠️ Sentiment doesn't strongly predict price for this stock")
+                                    st.markdown("⚠️ Price driven more by other factors (technicals, market sentiment)")
+                                
+                                # Export options
+                                st.markdown("### 📥 Export for External Backtesting")
+                                
+                                # Prepare export data
+                                export_data = combined_data[['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume', 'sentiment', 'confidence', 'news_count']].copy()
+                                export_data['timestamp'] = export_data['timestamp'].astype(str)
+                                
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    csv = export_data.to_csv(index=False)
+                                    ist_now = datetime.now(IST)
+                                    st.download_button(
+                                        label="📥 Download Backtest Data (CSV)",
+                                        data=csv,
+                                        file_name=f"backtest_{selected_stock_symbol.replace('.NS', '')}_{ist_now.strftime('%Y%m%d_%H%M')}.csv",
+                                        mime="text/csv"
+                                    )
+                                
+                                with col2:
+                                    # Export signals
+                                    if analysis['signals']:
+                                        signals_csv = pd.DataFrame(analysis['signals']).to_csv(index=False)
+                                        st.download_button(
+                                            label="📥 Download Signals (CSV)",
+                                            data=signals_csv,
+                                            file_name=f"signals_{selected_stock_symbol.replace('.NS', '')}_{ist_now.strftime('%Y%m%d_%H%M')}.csv",
+                                            mime="text/csv"
+                                        )
+                            else:
+                                st.error("Could not create backtest analysis. Insufficient data points.")
+                        else:
+                            st.error(f"Could not fetch historical price data for {selected_stock_symbol}")
     
     # Metrics
     col1, col2, col3 = st.columns(3)
@@ -1597,13 +2132,13 @@ Tags: {tags_string[:200]}...
     st.markdown("- **11+ News Sources** for comprehensive coverage")
     st.markdown("- **🔥 Viral Content Hunter** - Google Trends + Sentiment for YouTube")
     st.markdown("- **📋 Copyable Content** - YouTube tags, hashtags & description templates")
+    st.markdown("- **📈 Historical Backtest** - Hourly sentiment tracking with 7-day analysis")
     st.markdown("- **Custom Financial Lexicon** with 100+ Indian market terms")
     st.markdown("- **IST Timestamps** - All times in Indian Standard Time")
     st.markdown("- **Confidence Scores** showing sentiment unanimity")
-    st.markdown("- **Detailed Metrics** (Positive%, Negative%, Neutral%)")
     st.markdown("")
-    st.markdown("*Perfect for creating viral YouTube content on trending stocks! 🎬*")
-    st.markdown("*Just copy tags, hashtags & description - publish in minutes!*")
+    st.markdown("*Perfect for creating viral YouTube content AND validating trading strategies!* 🎬📊")
+    st.markdown("*Run hourly to build historical database for backtesting!* ⏰")
 
 if __name__ == "__main__":
     main()
