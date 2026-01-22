@@ -49,9 +49,6 @@ DEFAULT_STOCKS = {
     'BAJFINANCE.NS': 'Bajaj Finance',
     'HCLTECH.NS': 'HCL Technologies',
     'SUNPHARMA.NS': 'Sun Pharma'
-}
-
-    "Miscellaneous - BSE Listed": {
         "$ARLABNC.BO": "ARLABS(80NC)",
         "$BURRB51.BO": "BURR BROWN I",
         "$DCMTOYN.BO": "DCM TOYOTA N",
