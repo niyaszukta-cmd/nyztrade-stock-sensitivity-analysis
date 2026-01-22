@@ -8,6 +8,8 @@ import time
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import warnings
+warnings.filterwarnings('ignore')
 
 # Page configuration
 st.set_page_config(
@@ -18,6 +20,12 @@ st.set_page_config(
 
 # Initialize sentiment analyzer
 analyzer = SentimentIntensityAnalyzer()
+
+# Session state for debugging
+if 'debug_mode' not in st.session_state:
+    st.session_state.debug_mode = False
+if 'error_logs' not in st.session_state:
+    st.session_state.error_logs = []
 
 # Indian stock symbols (NSE)
 DEFAULT_STOCKS = {
@@ -43,133 +51,269 @@ DEFAULT_STOCKS = {
     'SUNPHARMA.NS': 'Sun Pharma'
 }
 
+def log_error(message):
+    """Log errors for debugging"""
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    st.session_state.error_logs.append(f"[{timestamp}] {message}")
+    if st.session_state.debug_mode:
+        st.warning(f"Debug: {message}")
+
 @st.cache_data(ttl=1800)  # Cache for 30 minutes
-def get_stock_data(symbol):
-    """Fetch current stock data from Yahoo Finance"""
-    try:
-        stock = yf.Ticker(symbol)
-        info = stock.info
-        hist = stock.history(period='5d')
-        
-        if hist.empty:
-            return None
+def get_stock_data(symbol, max_retries=3):
+    """Fetch current stock data from Yahoo Finance with retry logic"""
+    for attempt in range(max_retries):
+        try:
+            # Add delay between retries
+            if attempt > 0:
+                time.sleep(2)
             
-        current_price = hist['Close'].iloc[-1]
-        prev_close = hist['Close'].iloc[-2] if len(hist) > 1 else current_price
-        change = ((current_price - prev_close) / prev_close) * 100
-        volume = hist['Volume'].iloc[-1]
-        
-        return {
-            'symbol': symbol,
-            'price': round(current_price, 2),
-            'change': round(change, 2),
-            'volume': int(volume),
-            'prev_close': round(prev_close, 2),
-            'market_cap': info.get('marketCap', 'N/A')
-        }
-    except Exception as e:
-        return None
+            # Create ticker with timeout
+            stock = yf.Ticker(symbol)
+            
+            # Try to get data with multiple methods
+            hist = stock.history(period='5d', timeout=10)
+            
+            if hist.empty:
+                # Try alternative period
+                hist = stock.history(period='1mo', timeout=10)
+            
+            if hist.empty:
+                log_error(f"{symbol}: No historical data available")
+                continue
+                
+            current_price = hist['Close'].iloc[-1]
+            prev_close = hist['Close'].iloc[-2] if len(hist) > 1 else current_price
+            change = ((current_price - prev_close) / prev_close) * 100
+            volume = hist['Volume'].iloc[-1]
+            
+            # Try to get info, but don't fail if it doesn't work
+            try:
+                info = stock.info
+                market_cap = info.get('marketCap', 'N/A')
+            except:
+                market_cap = 'N/A'
+            
+            return {
+                'symbol': symbol,
+                'price': round(current_price, 2),
+                'change': round(change, 2),
+                'volume': int(volume),
+                'prev_close': round(prev_close, 2),
+                'market_cap': market_cap
+            }
+            
+        except Exception as e:
+            log_error(f"{symbol} attempt {attempt + 1}: {str(e)}")
+            if attempt == max_retries - 1:
+                return None
+            continue
+    
+    return None
 
 @st.cache_data(ttl=1800)
 def scrape_moneycontrol_news(company_name, limit=5):
-    """Scrape news from MoneyControl"""
+    """Scrape news from MoneyControl with improved error handling"""
     news_items = []
     try:
         # Format company name for search
-        search_query = company_name.replace(' ', '+')
-        url = f"https://www.moneycontrol.com/news/tags/{search_query.lower()}.html"
+        search_query = company_name.replace(' ', '-').lower()
+        
+        # Try multiple URL patterns
+        urls = [
+            f"https://www.moneycontrol.com/news/business/stocks/{search_query}-{limit}.html",
+            f"https://www.moneycontrol.com/news/tags/{search_query}.html",
+        ]
         
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
         }
         
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            articles = soup.find_all('li', class_='clearfix', limit=limit)
-            
-            for article in articles:
-                try:
-                    title_tag = article.find('h2')
-                    if title_tag and title_tag.find('a'):
-                        title = title_tag.find('a').text.strip()
-                        news_items.append(title)
-                except:
-                    continue
+        for url in urls:
+            try:
+                response = requests.get(url, headers=headers, timeout=15)
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.content, 'html.parser')
                     
-        # If MoneyControl fails, try generic news search
-        if len(news_items) < 2:
-            news_items.extend(scrape_generic_news(company_name, limit))
-            
+                    # Try multiple selectors
+                    articles = soup.find_all('li', class_='clearfix', limit=limit)
+                    if not articles:
+                        articles = soup.find_all('h2', limit=limit)
+                    
+                    for article in articles:
+                        try:
+                            title_tag = article.find('a')
+                            if title_tag:
+                                title = title_tag.text.strip()
+                                if len(title) > 20:  # Valid title
+                                    news_items.append(title)
+                        except:
+                            continue
+                    
+                    if len(news_items) >= 2:
+                        break
+            except:
+                continue
+                
     except Exception as e:
+        log_error(f"MoneyControl scraping error for {company_name}: {str(e)}")
+    
+    # If MoneyControl fails, try Economic Times
+    if len(news_items) < 2:
+        news_items.extend(scrape_economic_times_news(company_name, limit))
+    
+    # If still not enough, try generic news
+    if len(news_items) < 2:
         news_items.extend(scrape_generic_news(company_name, limit))
     
     return news_items[:limit]
 
-def scrape_generic_news(company_name, limit=5):
-    """Scrape news from Google News"""
+def scrape_economic_times_news(company_name, limit=5):
+    """Scrape news from Economic Times"""
     news_items = []
     try:
-        search_query = company_name.replace(' ', '+') + '+stock+india'
-        url = f"https://news.google.com/search?q={search_query}&hl=en-IN&gl=IN&ceid=IN:en"
+        search_query = company_name.replace(' ', '%20')
+        url = f"https://economictimes.indiatimes.com/topic/{search_query}"
         
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
         
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, 'html.parser')
-            articles = soup.find_all('article', limit=limit)
+            articles = soup.find_all('h3', limit=limit)
             
             for article in articles:
                 try:
-                    title_tag = article.find('a', class_='gPFEn')
-                    if title_tag:
-                        title = title_tag.text.strip()
+                    title = article.text.strip()
+                    if len(title) > 20:
                         news_items.append(title)
                 except:
                     continue
                     
     except Exception as e:
-        pass
+        log_error(f"Economic Times scraping error for {company_name}: {str(e)}")
     
     return news_items
 
+def scrape_generic_news(company_name, limit=5):
+    """Scrape news from Google News with improved headers"""
+    news_items = []
+    try:
+        search_query = company_name.replace(' ', '+') + '+stock+NSE+news'
+        url = f"https://www.google.com/search?q={search_query}&tbm=nws"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+        }
+        
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Try multiple selectors for Google News
+            articles = soup.find_all(['h3', 'div'], class_=re.compile('BNeawe|n0jPhd'), limit=limit*2)
+            
+            for article in articles:
+                try:
+                    title = article.text.strip()
+                    if len(title) > 20 and len(title) < 200:
+                        news_items.append(title)
+                except:
+                    continue
+                    
+    except Exception as e:
+        log_error(f"Generic news scraping error for {company_name}: {str(e)}")
+    
+    return news_items[:limit]
+
 def analyze_sentiment(news_items):
     """Analyze sentiment of news items using VADER"""
-    if not news_items:
-        return 0, "No recent news available"
+    if not news_items or len(news_items) == 0:
+        return 0, "No recent news found. Sentiment based on market data only."
     
     sentiments = []
-    reasons = []
+    positive_reasons = []
+    negative_reasons = []
     
     for news in news_items:
+        if not news or len(news) < 10:
+            continue
+            
         sentiment_score = analyzer.polarity_scores(news)
-        sentiments.append(sentiment_score['compound'])
+        compound = sentiment_score['compound']
+        sentiments.append(compound)
         
-        # Extract key phrases for reasons
-        if sentiment_score['compound'] > 0.05:
-            reasons.append(f"✓ {news[:100]}...")
-        elif sentiment_score['compound'] < -0.05:
-            reasons.append(f"✗ {news[:100]}...")
+        # Extract key phrases for reasons with better formatting
+        if compound > 0.05:
+            positive_reasons.append(f"📈 {news[:120]}...")
+        elif compound < -0.05:
+            negative_reasons.append(f"📉 {news[:120]}...")
     
-    avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0
-    reason_text = "\n".join(reasons[:3]) if reasons else "Neutral news sentiment"
+    if not sentiments:
+        return 0, "No significant news sentiment detected."
+    
+    avg_sentiment = sum(sentiments) / len(sentiments)
+    
+    # Build reason text
+    reason_parts = []
+    if positive_reasons:
+        reason_parts.append("POSITIVE SIGNALS:\n" + "\n".join(positive_reasons[:3]))
+    if negative_reasons:
+        reason_parts.append("NEGATIVE SIGNALS:\n" + "\n".join(negative_reasons[:3]))
+    
+    if not reason_parts:
+        reason_text = f"Analyzed {len(news_items)} news items - Overall sentiment: {'Positive' if avg_sentiment > 0 else 'Negative' if avg_sentiment < 0 else 'Neutral'}"
+    else:
+        reason_text = "\n\n".join(reason_parts)
     
     return avg_sentiment, reason_text
 
 def process_stock(symbol, name):
-    """Process a single stock - fetch data and analyze sentiment"""
+    """Process a single stock - fetch data and analyze sentiment with robust error handling"""
     try:
-        # Get stock data
+        # Get stock data with retry
         stock_data = get_stock_data(symbol)
+        
         if not stock_data:
-            return None
+            log_error(f"{name}: Failed to fetch stock data")
+            # Return minimal data to not completely fail
+            return {
+                'Company': name,
+                'Symbol': symbol.replace('.NS', ''),
+                'Price (₹)': 'N/A',
+                'Change (%)': 0.0,
+                'Volume': 'N/A',
+                'Sentiment Score': 0.0,
+                'Sentiment': 'Data Unavailable',
+                'Reasons': 'Unable to fetch stock data. Please try again.',
+                'Market Cap': 'N/A',
+                'Status': 'Failed'
+            }
         
         # Get news and analyze sentiment
-        news_items = scrape_moneycontrol_news(name, limit=5)
-        sentiment_score, reasons = analyze_sentiment(news_items)
+        try:
+            news_items = scrape_moneycontrol_news(name, limit=5)
+            sentiment_score, reasons = analyze_sentiment(news_items)
+        except Exception as e:
+            log_error(f"{name}: Sentiment analysis failed - {str(e)}")
+            sentiment_score = 0.0
+            reasons = "Sentiment analysis unavailable"
+        
+        # Determine sentiment category
+        if sentiment_score > 0.05:
+            sentiment = 'Positive'
+        elif sentiment_score < -0.05:
+            sentiment = 'Negative'
+        else:
+            sentiment = 'Neutral'
         
         return {
             'Company': name,
@@ -178,12 +322,26 @@ def process_stock(symbol, name):
             'Change (%)': stock_data['change'],
             'Volume': f"{stock_data['volume']:,}",
             'Sentiment Score': round(sentiment_score, 3),
-            'Sentiment': 'Positive' if sentiment_score > 0.05 else 'Negative' if sentiment_score < -0.05 else 'Neutral',
+            'Sentiment': sentiment,
             'Reasons': reasons,
-            'Market Cap': stock_data['market_cap']
+            'Market Cap': stock_data['market_cap'],
+            'Status': 'Success'
         }
+        
     except Exception as e:
-        return None
+        log_error(f"{name}: Complete processing failed - {str(e)}")
+        return {
+            'Company': name,
+            'Symbol': symbol.replace('.NS', ''),
+            'Price (₹)': 'N/A',
+            'Change (%)': 0.0,
+            'Volume': 'N/A',
+            'Sentiment Score': 0.0,
+            'Sentiment': 'Error',
+            'Reasons': f'Processing error: {str(e)[:100]}',
+            'Market Cap': 'N/A',
+            'Status': 'Failed'
+        }
 
 def main():
     st.title("📊 Indian Stock Sentiment Dashboard")
@@ -192,6 +350,9 @@ def main():
     # Sidebar configuration
     with st.sidebar:
         st.header("⚙️ Configuration")
+        
+        # Debug mode toggle
+        st.session_state.debug_mode = st.checkbox("🐛 Debug Mode", value=False)
         
         # Stock selection
         selected_stocks = st.multiselect(
@@ -214,13 +375,26 @@ def main():
         # Refresh button
         if st.button("🔄 Refresh Data", use_container_width=True):
             st.cache_data.clear()
+            st.session_state.error_logs = []
             st.rerun()
+        
+        # Clear cache button
+        if st.button("🗑️ Clear Cache", use_container_width=True):
+            st.cache_data.clear()
+            st.success("Cache cleared!")
         
         st.markdown("---")
         st.markdown("**Data Sources:**")
         st.markdown("- Stock Data: Yahoo Finance")
-        st.markdown("- News: MoneyControl, Google News")
+        st.markdown("- News: MoneyControl, ET, Google")
         st.markdown("- Sentiment: VADER Analysis")
+        
+        if st.session_state.error_logs and st.session_state.debug_mode:
+            st.markdown("---")
+            st.markdown("**Error Logs:**")
+            with st.expander("View Logs"):
+                for log in st.session_state.error_logs[-10:]:
+                    st.text(log)
     
     if not selected_stocks:
         st.warning("Please select at least one stock to analyze.")
@@ -232,7 +406,9 @@ def main():
     status_text = st.empty()
     
     results = []
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    failed_stocks = []
+    
+    with ThreadPoolExecutor(max_workers=3) as executor:  # Reduced workers to avoid rate limiting
         futures = {
             executor.submit(process_stock, symbol, DEFAULT_STOCKS[symbol]): symbol 
             for symbol in selected_stocks
@@ -242,7 +418,11 @@ def main():
         for future in as_completed(futures):
             result = future.result()
             if result:
-                results.append(result)
+                if result.get('Status') == 'Success':
+                    results.append(result)
+                else:
+                    failed_stocks.append(result['Company'])
+                    results.append(result)  # Include failed ones too
             completed += 1
             progress = completed / len(selected_stocks)
             progress_bar.progress(progress)
@@ -252,11 +432,27 @@ def main():
     status_text.empty()
     
     if not results:
-        st.error("No data could be retrieved. Please try again later.")
+        st.error("❌ No data could be retrieved. Please try again later.")
+        st.markdown("**Troubleshooting:**")
+        st.markdown("- Check your internet connection")
+        st.markdown("- Try selecting different stocks")
+        st.markdown("- Enable Debug Mode in sidebar to see detailed errors")
+        st.markdown("- Click 'Clear Cache' and try again")
+        return
+    
+    # Show warning for failed stocks
+    if failed_stocks:
+        st.warning(f"⚠️ Failed to retrieve complete data for: {', '.join(failed_stocks[:5])}")
+    
+    # Filter successful results
+    successful_results = [r for r in results if r.get('Status') == 'Success' and r['Price (₹)'] != 'N/A']
+    
+    if not successful_results:
+        st.error("❌ No complete stock data available. Please try again.")
         return
     
     # Create DataFrame
-    df = pd.DataFrame(results)
+    df = pd.DataFrame(successful_results)
     
     # Separate positive and negative sentiments
     positive_df = df[df['Sentiment Score'] > sentiment_threshold].sort_values('Sentiment Score', ascending=False)
@@ -293,7 +489,7 @@ def main():
                 st.markdown("**News Analysis:**")
                 st.text_area("Reasons for Positive Sentiment", row['Reasons'], height=150, key=f"pos_{idx}", disabled=True)
     else:
-        st.info("No stocks with positive sentiment found.")
+        st.info("No stocks with positive sentiment found based on current threshold.")
     
     # Negative Sentiment Section
     st.markdown("---")
@@ -314,7 +510,7 @@ def main():
                 st.markdown("**News Analysis:**")
                 st.text_area("Reasons for Negative Sentiment", row['Reasons'], height=150, key=f"neg_{idx}", disabled=True)
     else:
-        st.info("No stocks with negative sentiment found.")
+        st.info("No stocks with negative sentiment found based on current threshold.")
     
     # Neutral Sentiment Section
     if not neutral_df.empty:
@@ -335,11 +531,13 @@ def main():
     
     # Color coding function
     def color_sentiment(val):
-        if val > sentiment_threshold:
-            return 'background-color: #90EE90'
-        elif val < -sentiment_threshold:
-            return 'background-color: #FFB6C6'
-        return 'background-color: #FFFACD'
+        if isinstance(val, (int, float)):
+            if val > sentiment_threshold:
+                return 'background-color: #90EE90'
+            elif val < -sentiment_threshold:
+                return 'background-color: #FFB6C6'
+            return 'background-color: #FFFACD'
+        return ''
     
     styled_df = display_df.style.applymap(color_sentiment, subset=['Sentiment Score'])
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
