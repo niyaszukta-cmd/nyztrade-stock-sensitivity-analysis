@@ -18,8 +18,114 @@ st.set_page_config(
     layout="wide"
 )
 
-# Initialize sentiment analyzer
+# Initialize sentiment analyzer with custom financial lexicon
 analyzer = SentimentIntensityAnalyzer()
+
+# Add custom financial terms for Indian markets
+financial_lexicon = {
+    # Strong Positive
+    'rally': 3.0,
+    'surge': 3.0,
+    'soar': 3.0,
+    'skyrocket': 3.5,
+    'breakout': 2.5,
+    'bullish': 2.8,
+    'outperform': 2.5,
+    'upgrade': 2.3,
+    'beat': 2.0,
+    'strong': 2.0,
+    'robust': 2.2,
+    'stellar': 2.5,
+    'record': 2.3,
+    'milestone': 2.0,
+    'profit': 1.8,
+    'gain': 1.7,
+    'growth': 1.8,
+    'expansion': 1.7,
+    'positive': 1.5,
+    'opportunity': 1.5,
+    'buy': 2.0,
+    'accumulate': 1.8,
+    'momentum': 1.5,
+    'winner': 2.0,
+    'boom': 2.5,
+    'optimistic': 1.8,
+    'confident': 1.7,
+    
+    # Moderate Positive
+    'improve': 1.3,
+    'recovery': 1.5,
+    'rebound': 1.5,
+    'stable': 1.0,
+    'hopeful': 1.2,
+    'promising': 1.5,
+    'potential': 1.2,
+    
+    # Strong Negative
+    'crash': -3.5,
+    'plunge': -3.0,
+    'collapse': -3.2,
+    'tumble': -2.5,
+    'bearish': -2.8,
+    'underperform': -2.5,
+    'downgrade': -2.3,
+    'miss': -2.0,
+    'weak': -2.0,
+    'poor': -2.0,
+    'loss': -2.2,
+    'decline': -1.8,
+    'fall': -1.7,
+    'drop': -1.7,
+    'negative': -1.5,
+    'sell': -2.0,
+    'exit': -1.5,
+    'concern': -1.5,
+    'worry': -1.7,
+    'risk': -1.3,
+    'threat': -2.0,
+    'crisis': -2.5,
+    'trouble': -2.0,
+    'struggle': -1.8,
+    'disappointing': -2.0,
+    'hurt': -1.7,
+    'pressure': -1.5,
+    
+    # Moderate Negative
+    'slowdown': -1.5,
+    'caution': -1.2,
+    'uncertainty': -1.3,
+    'volatile': -1.0,
+    'correction': -1.2,
+    
+    # Indian market specific
+    'fii': 1.5,  # Foreign Institutional Investors buying
+    'dii': 1.3,  # Domestic Institutional Investors
+    'nifty': 0.5,
+    'sensex': 0.5,
+    'sebi': 0.0,  # Neutral regulator
+    'rbi': 0.0,   # Neutral central bank
+    'listing': 1.5,
+    'ipo': 1.5,
+    'buyback': 1.8,
+    'dividend': 1.5,
+    'bonus': 2.0,
+    'split': 1.0,
+    'merger': 1.2,
+    'acquisition': 1.2,
+    'divestment': -0.5,
+    'delisting': -2.0,
+    'halt': -2.5,
+    'suspension': -2.8,
+    'penalty': -2.3,
+    'fraud': -3.5,
+    'scam': -3.5,
+    'investigation': -2.0,
+    'lawsuit': -2.2,
+    'default': -3.0,
+}
+
+# Update VADER lexicon
+analyzer.lexicon.update(financial_lexicon)
 
 # Session state for debugging
 if 'debug_mode' not in st.session_state:
@@ -246,79 +352,28 @@ def get_stock_data(symbol, max_retries=3):
 # News Scraping Functions
 @st.cache_data(ttl=900)  # Cache for 15 minutes
 def scrape_trending_stocks_from_news(max_stocks=50):
-    """Scrape latest market news and extract stock symbols with sentiment"""
+    """Scrape latest market news from 10+ sources and extract stock symbols"""
     stock_news_map = {}  # {symbol: [news_items]}
     
-    print("Starting news scraping from multiple sources...")
+    print("Starting comprehensive news scraping from 10+ sources...")
     
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
     }
     
     # Source 1: MoneyControl Market News
     try:
-        url = "https://www.moneycontrol.com/news/business/markets/"
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            articles = soup.find_all(['h2', 'h3'], limit=50)
-            
-            for article in articles:
-                try:
-                    headline = article.get_text().strip()
-                    if len(headline) > 20:
-                        symbols = extract_stock_symbols_from_text(headline)
-                        for symbol in symbols:
-                            if symbol not in stock_news_map:
-                                stock_news_map[symbol] = []
-                            if len(stock_news_map[symbol]) < 5:
-                                stock_news_map[symbol].append(headline)
-                except:
-                    continue
-        
-        print(f"MoneyControl: Found {len(stock_news_map)} stocks")
-    except Exception as e:
-        print(f"MoneyControl scraping failed: {str(e)}")
-    
-    # Source 2: Economic Times Market News
-    try:
-        url = "https://economictimes.indiatimes.com/markets/stocks/news"
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            articles = soup.find_all(['h2', 'h3', 'h4'], limit=50)
-            
-            for article in articles:
-                try:
-                    headline = article.get_text().strip()
-                    if len(headline) > 20:
-                        symbols = extract_stock_symbols_from_text(headline)
-                        for symbol in symbols:
-                            if symbol not in stock_news_map:
-                                stock_news_map[symbol] = []
-                            if len(stock_news_map[symbol]) < 5:
-                                stock_news_map[symbol].append(headline)
-                except:
-                    continue
-        
-        print(f"Economic Times: Total {len(stock_news_map)} stocks now")
-    except Exception as e:
-        print(f"Economic Times scraping failed: {str(e)}")
-    
-    # Source 3: Google News for Indian stocks
-    try:
-        search_queries = [
-            'NSE+stocks+news+today',
-            'Indian+stock+market+news',
+        urls = [
+            "https://www.moneycontrol.com/news/business/markets/",
+            "https://www.moneycontrol.com/news/business/stocks/",
         ]
-        
-        for query in search_queries:
-            url = f"https://www.google.com/search?q={query}&tbm=nws"
+        for url in urls:
             response = requests.get(url, headers=headers, timeout=15)
-            
             if response.status_code == 200:
                 soup = BeautifulSoup(response.content, 'html.parser')
-                articles = soup.find_all(['h3', 'div'], class_=re.compile('BNeawe|n0jPhd'), limit=30)
+                articles = soup.find_all(['h2', 'h3', 'a'], limit=60)
                 
                 for article in articles:
                     try:
@@ -328,72 +383,401 @@ def scrape_trending_stocks_from_news(max_stocks=50):
                             for symbol in symbols:
                                 if symbol not in stock_news_map:
                                     stock_news_map[symbol] = []
-                                if len(stock_news_map[symbol]) < 5:
+                                if len(stock_news_map[symbol]) < 8:
                                     stock_news_map[symbol].append(headline)
                     except:
                         continue
-            
-            time.sleep(1)
         
-        print(f"Google News: Total {len(stock_news_map)} stocks now")
+        print(f"MoneyControl: Found {len(stock_news_map)} stocks")
     except Exception as e:
-        print(f"Google News scraping failed: {str(e)}")
+        print(f"MoneyControl failed: {str(e)}")
     
-    print(f"Final: Found {len(stock_news_map)} unique stocks in news")
+    # Source 2: Economic Times
+    try:
+        urls = [
+            "https://economictimes.indiatimes.com/markets/stocks/news",
+            "https://economictimes.indiatimes.com/news/company/corporate-trends",
+        ]
+        for url in urls:
+            response = requests.get(url, headers=headers, timeout=15)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.content, 'html.parser')
+                articles = soup.find_all(['h2', 'h3', 'h4'], limit=60)
+                
+                for article in articles:
+                    try:
+                        headline = article.get_text().strip()
+                        if len(headline) > 20 and len(headline) < 300:
+                            symbols = extract_stock_symbols_from_text(headline)
+                            for symbol in symbols:
+                                if symbol not in stock_news_map:
+                                    stock_news_map[symbol] = []
+                                if len(stock_news_map[symbol]) < 8:
+                                    stock_news_map[symbol].append(headline)
+                    except:
+                        continue
+        
+        print(f"Economic Times: Total {len(stock_news_map)} stocks")
+    except Exception as e:
+        print(f"Economic Times failed: {str(e)}")
+    
+    # Source 3: Business Standard
+    try:
+        urls = [
+            "https://www.business-standard.com/markets",
+            "https://www.business-standard.com/companies",
+        ]
+        for url in urls:
+            response = requests.get(url, headers=headers, timeout=15)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.content, 'html.parser')
+                articles = soup.find_all(['h2', 'h3', 'a'], limit=60)
+                
+                for article in articles:
+                    try:
+                        headline = article.get_text().strip()
+                        if len(headline) > 20 and len(headline) < 300:
+                            symbols = extract_stock_symbols_from_text(headline)
+                            for symbol in symbols:
+                                if symbol not in stock_news_map:
+                                    stock_news_map[symbol] = []
+                                if len(stock_news_map[symbol]) < 8:
+                                    stock_news_map[symbol].append(headline)
+                    except:
+                        continue
+        
+        print(f"Business Standard: Total {len(stock_news_map)} stocks")
+    except Exception as e:
+        print(f"Business Standard failed: {str(e)}")
+    
+    # Source 4: LiveMint
+    try:
+        urls = [
+            "https://www.livemint.com/market",
+            "https://www.livemint.com/companies",
+        ]
+        for url in urls:
+            response = requests.get(url, headers=headers, timeout=15)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.content, 'html.parser')
+                articles = soup.find_all(['h2', 'h3', 'a'], limit=60)
+                
+                for article in articles:
+                    try:
+                        headline = article.get_text().strip()
+                        if len(headline) > 20 and len(headline) < 300:
+                            symbols = extract_stock_symbols_from_text(headline)
+                            for symbol in symbols:
+                                if symbol not in stock_news_map:
+                                    stock_news_map[symbol] = []
+                                if len(stock_news_map[symbol]) < 8:
+                                    stock_news_map[symbol].append(headline)
+                    except:
+                        continue
+        
+        print(f"LiveMint: Total {len(stock_news_map)} stocks")
+    except Exception as e:
+        print(f"LiveMint failed: {str(e)}")
+    
+    # Source 5: Financial Express
+    try:
+        url = "https://www.financialexpress.com/market/"
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
+            articles = soup.find_all(['h2', 'h3'], limit=60)
+            
+            for article in articles:
+                try:
+                    headline = article.get_text().strip()
+                    if len(headline) > 20 and len(headline) < 300:
+                        symbols = extract_stock_symbols_from_text(headline)
+                        for symbol in symbols:
+                            if symbol not in stock_news_map:
+                                stock_news_map[symbol] = []
+                            if len(stock_news_map[symbol]) < 8:
+                                stock_news_map[symbol].append(headline)
+                except:
+                    continue
+        
+        print(f"Financial Express: Total {len(stock_news_map)} stocks")
+    except Exception as e:
+        print(f"Financial Express failed: {str(e)}")
+    
+    # Source 6: The Hindu Business Line
+    try:
+        url = "https://www.thehindubusinessline.com/markets/"
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
+            articles = soup.find_all(['h2', 'h3', 'a'], limit=60)
+            
+            for article in articles:
+                try:
+                    headline = article.get_text().strip()
+                    if len(headline) > 20 and len(headline) < 300:
+                        symbols = extract_stock_symbols_from_text(headline)
+                        for symbol in symbols:
+                            if symbol not in stock_news_map:
+                                stock_news_map[symbol] = []
+                            if len(stock_news_map[symbol]) < 8:
+                                stock_news_map[symbol].append(headline)
+                except:
+                    continue
+        
+        print(f"Hindu Business Line: Total {len(stock_news_map)} stocks")
+    except Exception as e:
+        print(f"Hindu Business Line failed: {str(e)}")
+    
+    # Source 7: Bloomberg Quint
+    try:
+        url = "https://www.bloombergquint.com/markets"
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
+            articles = soup.find_all(['h2', 'h3', 'a'], limit=60)
+            
+            for article in articles:
+                try:
+                    headline = article.get_text().strip()
+                    if len(headline) > 20 and len(headline) < 300:
+                        symbols = extract_stock_symbols_from_text(headline)
+                        for symbol in symbols:
+                            if symbol not in stock_news_map:
+                                stock_news_map[symbol] = []
+                            if len(stock_news_map[symbol]) < 8:
+                                stock_news_map[symbol].append(headline)
+                except:
+                    continue
+        
+        print(f"Bloomberg Quint: Total {len(stock_news_map)} stocks")
+    except Exception as e:
+        print(f"Bloomberg Quint failed: {str(e)}")
+    
+    # Source 8: CNBC TV18
+    try:
+        url = "https://www.cnbctv18.com/market/"
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
+            articles = soup.find_all(['h2', 'h3', 'a'], limit=60)
+            
+            for article in articles:
+                try:
+                    headline = article.get_text().strip()
+                    if len(headline) > 20 and len(headline) < 300:
+                        symbols = extract_stock_symbols_from_text(headline)
+                        for symbol in symbols:
+                            if symbol not in stock_news_map:
+                                stock_news_map[symbol] = []
+                            if len(stock_news_map[symbol]) < 8:
+                                stock_news_map[symbol].append(headline)
+                except:
+                    continue
+        
+        print(f"CNBC TV18: Total {len(stock_news_map)} stocks")
+    except Exception as e:
+        print(f"CNBC TV18 failed: {str(e)}")
+    
+    # Source 9: Zee Business
+    try:
+        url = "https://www.zeebiz.com/markets"
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
+            articles = soup.find_all(['h2', 'h3', 'a'], limit=60)
+            
+            for article in articles:
+                try:
+                    headline = article.get_text().strip()
+                    if len(headline) > 20 and len(headline) < 300:
+                        symbols = extract_stock_symbols_from_text(headline)
+                        for symbol in symbols:
+                            if symbol not in stock_news_map:
+                                stock_news_map[symbol] = []
+                            if len(stock_news_map[symbol]) < 8:
+                                stock_news_map[symbol].append(headline)
+                except:
+                    continue
+        
+        print(f"Zee Business: Total {len(stock_news_map)} stocks")
+    except Exception as e:
+        print(f"Zee Business failed: {str(e)}")
+    
+    # Source 10: Google News (Multiple Queries)
+    try:
+        search_queries = [
+            'NSE+stocks+news+today',
+            'Indian+stock+market+news+today',
+            'Nifty+stocks+news',
+            'BSE+stocks+trading+news',
+            'Indian+companies+stock+news',
+        ]
+        
+        for query in search_queries:
+            try:
+                url = f"https://www.google.com/search?q={query}&tbm=nws"
+                response = requests.get(url, headers=headers, timeout=15)
+                
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.content, 'html.parser')
+                    articles = soup.find_all(['h3', 'div'], class_=re.compile('BNeawe|n0jPhd'), limit=40)
+                    
+                    for article in articles:
+                        try:
+                            headline = article.get_text().strip()
+                            if len(headline) > 20 and len(headline) < 300:
+                                symbols = extract_stock_symbols_from_text(headline)
+                                for symbol in symbols:
+                                    if symbol not in stock_news_map:
+                                        stock_news_map[symbol] = []
+                                    if len(stock_news_map[symbol]) < 8:
+                                        stock_news_map[symbol].append(headline)
+                        except:
+                            continue
+                
+                time.sleep(0.5)  # Small delay between queries
+            except:
+                continue
+        
+        print(f"Google News: Total {len(stock_news_map)} stocks")
+    except Exception as e:
+        print(f"Google News failed: {str(e)}")
+    
+    # Source 11: Reuters India Business
+    try:
+        url = "https://www.reuters.com/world/india/"
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
+            articles = soup.find_all(['h3', 'a'], limit=50)
+            
+            for article in articles:
+                try:
+                    headline = article.get_text().strip()
+                    if len(headline) > 20 and len(headline) < 300:
+                        symbols = extract_stock_symbols_from_text(headline)
+                        for symbol in symbols:
+                            if symbol not in stock_news_map:
+                                stock_news_map[symbol] = []
+                            if len(stock_news_map[symbol]) < 8:
+                                stock_news_map[symbol].append(headline)
+                except:
+                    continue
+        
+        print(f"Reuters India: Total {len(stock_news_map)} stocks")
+    except Exception as e:
+        print(f"Reuters India failed: {str(e)}")
+    
+    print(f"✅ FINAL: Found {len(stock_news_map)} unique stocks across all sources")
+    print(f"📊 Total headlines collected: {sum(len(v) for v in stock_news_map.values())}")
     
     return stock_news_map
 
 # Sentiment Analysis Functions
 def analyze_sentiment(news_items):
-    """Analyze sentiment of news items using VADER"""
+    """Analyze sentiment using enhanced VADER with detailed metrics"""
     if not news_items or len(news_items) == 0:
-        return 0, "No recent news found."
+        return 0, "No recent news found.", {'pos': 0, 'neg': 0, 'neu': 0}
     
     sentiments = []
     positive_reasons = []
     negative_reasons = []
+    neutral_reasons = []
+    
+    # Detailed metrics
+    pos_scores = []
+    neg_scores = []
+    neu_scores = []
+    compound_scores = []
     
     for news in news_items:
         if not news or len(news) < 10:
             continue
-            
-        sentiment_score = analyzer.polarity_scores(news)
-        compound = sentiment_score['compound']
-        sentiments.append(compound)
         
-        if compound > 0.05:
-            positive_reasons.append(f"📈 {news[:120]}...")
-        elif compound < -0.05:
-            negative_reasons.append(f"📉 {news[:120]}...")
+        # Get full sentiment breakdown
+        sentiment_dict = analyzer.polarity_scores(news)
+        
+        compound = sentiment_dict['compound']
+        pos = sentiment_dict['pos']
+        neg = sentiment_dict['neg']
+        neu = sentiment_dict['neu']
+        
+        sentiments.append(compound)
+        pos_scores.append(pos)
+        neg_scores.append(neg)
+        neu_scores.append(neu)
+        compound_scores.append(compound)
+        
+        # Categorize with more granular thresholds
+        if compound > 0.3:
+            positive_reasons.append(f"🚀 STRONG: {news[:150]}")
+        elif compound > 0.1:
+            positive_reasons.append(f"📈 Positive: {news[:150]}")
+        elif compound < -0.3:
+            negative_reasons.append(f"⚠️ STRONG: {news[:150]}")
+        elif compound < -0.1:
+            negative_reasons.append(f"📉 Negative: {news[:150]}")
+        else:
+            neutral_reasons.append(f"➖ Neutral: {news[:150]}")
     
     if not sentiments:
-        return 0, "No significant news sentiment detected."
+        return 0, "No significant news sentiment detected.", {'pos': 0, 'neg': 0, 'neu': 0}
     
-    avg_sentiment = sum(sentiments) / len(sentiments)
+    # Calculate aggregate metrics
+    avg_compound = sum(compound_scores) / len(compound_scores)
+    avg_pos = sum(pos_scores) / len(pos_scores)
+    avg_neg = sum(neg_scores) / len(neg_scores)
+    avg_neu = sum(neu_scores) / len(neu_scores)
     
-    # Build reason text
+    # Calculate sentiment confidence (how unanimous is the sentiment?)
+    std_dev = (sum((x - avg_compound) ** 2 for x in compound_scores) / len(compound_scores)) ** 0.5
+    confidence = 1 - min(std_dev * 2, 1)  # Higher confidence if less variance
+    
+    # Build comprehensive reason text
     reason_parts = []
+    
     if positive_reasons:
-        reason_parts.append("POSITIVE SIGNALS:\n" + "\n".join(positive_reasons[:3]))
+        reason_parts.append(f"POSITIVE SIGNALS ({len(positive_reasons)} items):\n" + "\n".join(positive_reasons[:4]))
+    
     if negative_reasons:
-        reason_parts.append("NEGATIVE SIGNALS:\n" + "\n".join(negative_reasons[:3]))
+        reason_parts.append(f"NEGATIVE SIGNALS ({len(negative_reasons)} items):\n" + "\n".join(negative_reasons[:4]))
+    
+    if neutral_reasons and len(reason_parts) == 0:
+        reason_parts.append(f"NEUTRAL COVERAGE ({len(neutral_reasons)} items):\n" + "\n".join(neutral_reasons[:2]))
+    
+    # Add sentiment metrics
+    metrics_text = f"\n📊 METRICS:\n"
+    metrics_text += f"• Compound Score: {avg_compound:.3f}\n"
+    metrics_text += f"• Positive: {avg_pos:.2f} | Negative: {avg_neg:.2f} | Neutral: {avg_neu:.2f}\n"
+    metrics_text += f"• Confidence: {confidence:.2f}\n"
+    metrics_text += f"• News Items: {len(news_items)}"
     
     if not reason_parts:
-        reason_text = f"Analyzed {len(news_items)} news items - Neutral sentiment"
+        reason_text = f"Analyzed {len(news_items)} news items - Balanced sentiment\n{metrics_text}"
     else:
-        reason_text = "\n\n".join(reason_parts)
+        reason_text = "\n\n".join(reason_parts) + "\n\n" + metrics_text
     
-    return avg_sentiment, reason_text
+    # Return enhanced data
+    sentiment_metadata = {
+        'pos': avg_pos,
+        'neg': avg_neg,
+        'neu': avg_neu,
+        'confidence': confidence,
+        'std_dev': std_dev
+    }
+    
+    return avg_compound, reason_text, sentiment_metadata
 
 def analyze_and_rank_stocks(stock_news_map, sentiment_threshold=0.05):
-    """Analyze sentiment for all stocks and return ranked by absolute sentiment"""
+    """Analyze sentiment for all stocks with enhanced VADER metrics"""
     stock_sentiment_data = []
     
     for symbol, news_items in stock_news_map.items():
         if len(news_items) == 0:
             continue
         
-        sentiment_score, reasons = analyze_sentiment(news_items)
+        sentiment_score, reasons, metadata = analyze_sentiment(news_items)
         
         # Get company name from symbol
         company_name = symbol.replace('.NS', '')
@@ -408,17 +792,21 @@ def analyze_and_rank_stocks(stock_news_map, sentiment_threshold=0.05):
             'sentiment_score': sentiment_score,
             'news_count': len(news_items),
             'reasons': reasons,
-            'news_items': news_items
+            'news_items': news_items,
+            'confidence': metadata['confidence'],
+            'pos_score': metadata['pos'],
+            'neg_score': metadata['neg'],
+            'neu_score': metadata['neu']
         })
     
-    # Sort by absolute sentiment (highest first)
-    stock_sentiment_data.sort(key=lambda x: abs(x['sentiment_score']), reverse=True)
+    # Sort by absolute sentiment (highest first) with confidence as tiebreaker
+    stock_sentiment_data.sort(key=lambda x: (abs(x['sentiment_score']), x['confidence']), reverse=True)
     
     return stock_sentiment_data
 
 # Stock Processing Function
-def process_stock_with_sentiment(symbol, company_name, sentiment_score, reasons, news_items):
-    """Process a stock that was already discovered from news with pre-calculated sentiment"""
+def process_stock_with_sentiment(symbol, company_name, sentiment_score, reasons, news_items, confidence=0, pos_score=0, neg_score=0):
+    """Process a stock with pre-calculated sentiment and enhanced metrics"""
     try:
         stock_data = None
         try:
@@ -438,6 +826,9 @@ def process_stock_with_sentiment(symbol, company_name, sentiment_score, reasons,
                 'Reasons': reasons,
                 'Market Cap': 'N/A',
                 'News Count': len(news_items),
+                'Confidence': round(confidence, 2),
+                'Positive %': round(pos_score * 100, 1),
+                'Negative %': round(neg_score * 100, 1),
                 'Status': 'Partial'
             }
         
@@ -459,6 +850,9 @@ def process_stock_with_sentiment(symbol, company_name, sentiment_score, reasons,
             'Reasons': reasons,
             'Market Cap': stock_data['market_cap'],
             'News Count': len(news_items),
+            'Confidence': round(confidence, 2),
+            'Positive %': round(pos_score * 100, 1),
+            'Negative %': round(neg_score * 100, 1),
             'Status': 'Success'
         }
         
@@ -475,6 +869,9 @@ def process_stock_with_sentiment(symbol, company_name, sentiment_score, reasons,
             'Reasons': reasons if reasons else 'Processing error',
             'Market Cap': 'N/A',
             'News Count': len(news_items) if news_items else 0,
+            'Confidence': round(confidence, 2),
+            'Positive %': round(pos_score * 100, 1),
+            'Negative %': round(neg_score * 100, 1),
             'Status': 'Failed'
         }
 
@@ -540,10 +937,25 @@ def main():
         st.markdown("5. 🎯 Ranks by sentiment")
         
         st.markdown("---")
-        st.markdown("**Data Sources:**")
+        st.markdown("**Data Sources (11+):**")
+        st.markdown("📰 **News:**")
         st.markdown("- MoneyControl")
         st.markdown("- Economic Times")
-        st.markdown("- Google News")
+        st.markdown("- Business Standard")
+        st.markdown("- LiveMint")
+        st.markdown("- Financial Express")
+        st.markdown("- Hindu Business Line")
+        st.markdown("- Bloomberg Quint")
+        st.markdown("- CNBC TV18")
+        st.markdown("- Zee Business")
+        st.markdown("- Google News (5 queries)")
+        st.markdown("- Reuters India")
+        st.markdown("")
+        st.markdown("📊 **Analysis:**")
+        st.markdown("- VADER with Custom")
+        st.markdown("  Financial Lexicon")
+        st.markdown("- 100+ Indian market")
+        st.markdown("  specific terms")
         
         if st.session_state.error_logs and st.session_state.debug_mode:
             st.markdown("---")
@@ -607,7 +1019,10 @@ def main():
                     stock['company'],
                     stock['sentiment_score'],
                     stock['reasons'],
-                    stock['news_items']
+                    stock['news_items'],
+                    stock.get('confidence', 0),
+                    stock.get('pos_score', 0),
+                    stock.get('neg_score', 0)
                 )
                 futures[future] = stock
             except Exception as e:
@@ -678,9 +1093,10 @@ def main():
         
         for idx, row in positive_df.head(15).iterrows():
             sentiment_intensity = "🚀 Very Strong" if row['Sentiment Score'] > 0.3 else "💪 Strong" if row['Sentiment Score'] > 0.2 else "📈 Moderate"
+            confidence_badge = f"🎯 {row['Confidence']:.0%}" if row.get('Confidence', 0) > 0 else ""
             
-            with st.expander(f"**{row['Company']}** ({row['Symbol']}) | Sentiment: **{row['Sentiment Score']:.3f}** | {sentiment_intensity}"):
-                col1, col2, col3, col4 = st.columns(4)
+            with st.expander(f"**{row['Company']}** ({row['Symbol']}) | Score: **{row['Sentiment Score']:.3f}** | {sentiment_intensity} {confidence_badge}"):
+                col1, col2, col3, col4, col5 = st.columns(5)
                 with col1:
                     if row['Price (₹)'] != 'N/A':
                         st.metric("Price", f"₹{row['Price (₹)']}", f"{row['Change (%)']}%")
@@ -691,10 +1107,13 @@ def main():
                 with col3:
                     st.metric("News Items", row['News Count'])
                 with col4:
-                    st.metric("Sentiment", sentiment_intensity)
+                    st.metric("Confidence", f"{row.get('Confidence', 0):.0%}")
+                with col5:
+                    pos_pct = row.get('Positive %', 0)
+                    st.metric("Positive %", f"{pos_pct:.1f}%")
                 
-                st.markdown("**📰 News-Based Analysis:**")
-                st.text_area("", row['Reasons'], height=180, key=f"pos_{idx}", disabled=True, label_visibility="collapsed")
+                st.markdown("**📰 Detailed News Analysis:**")
+                st.text_area("", row['Reasons'], height=200, key=f"pos_{idx}", disabled=True, label_visibility="collapsed")
     
     # Display negative stocks
     if show_negative and not negative_df.empty:
@@ -703,9 +1122,10 @@ def main():
         
         for idx, row in negative_df.head(15).iterrows():
             sentiment_intensity = "⚠️ Very Strong" if row['Sentiment Score'] < -0.3 else "📉 Strong" if row['Sentiment Score'] < -0.2 else "👎 Moderate"
+            confidence_badge = f"🎯 {row['Confidence']:.0%}" if row.get('Confidence', 0) > 0 else ""
             
-            with st.expander(f"**{row['Company']}** ({row['Symbol']}) | Sentiment: **{row['Sentiment Score']:.3f}** | {sentiment_intensity}"):
-                col1, col2, col3, col4 = st.columns(4)
+            with st.expander(f"**{row['Company']}** ({row['Symbol']}) | Score: **{row['Sentiment Score']:.3f}** | {sentiment_intensity} {confidence_badge}"):
+                col1, col2, col3, col4, col5 = st.columns(5)
                 with col1:
                     if row['Price (₹)'] != 'N/A':
                         st.metric("Price", f"₹{row['Price (₹)']}", f"{row['Change (%)']}%")
@@ -716,23 +1136,26 @@ def main():
                 with col3:
                     st.metric("News Items", row['News Count'])
                 with col4:
-                    st.metric("Sentiment", sentiment_intensity)
+                    st.metric("Confidence", f"{row.get('Confidence', 0):.0%}")
+                with col5:
+                    neg_pct = row.get('Negative %', 0)
+                    st.metric("Negative %", f"{neg_pct:.1f}%")
                 
-                st.markdown("**📰 News-Based Analysis:**")
-                st.text_area("", row['Reasons'], height=180, key=f"neg_{idx}", disabled=True, label_visibility="collapsed")
+                st.markdown("**📰 Detailed News Analysis:**")
+                st.text_area("", row['Reasons'], height=200, key=f"neg_{idx}", disabled=True, label_visibility="collapsed")
     
     # Display neutral stocks
     if show_neutral and not neutral_df.empty:
         st.markdown("---")
         st.subheader("⚪ Neutral Sentiment Stocks")
-        display_neutral = neutral_df[['Company', 'Symbol', 'Price (₹)', 'Change (%)', 'Volume', 'Sentiment Score', 'News Count']].head(20)
+        display_neutral = neutral_df[['Company', 'Symbol', 'Price (₹)', 'Change (%)', 'Volume', 'Sentiment Score', 'Confidence', 'News Count']].head(20)
         st.dataframe(display_neutral, use_container_width=True, hide_index=True)
     
     # Complete screener
     st.markdown("---")
     st.subheader("📋 Complete Sentiment Screener")
     
-    display_df = filtered_df[['Company', 'Symbol', 'Price (₹)', 'Change (%)', 'Sentiment Score', 'News Count', 'Sentiment']].copy()
+    display_df = filtered_df[['Company', 'Symbol', 'Price (₹)', 'Change (%)', 'Sentiment Score', 'Confidence', 'News Count', 'Sentiment']].copy()
     
     def color_sentiment(val):
         if isinstance(val, (int, float)):
@@ -761,7 +1184,14 @@ def main():
         st.markdown(f"*Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
     
     st.markdown("---")
-    st.markdown("**💡 Pro Tip:** Stocks with higher absolute sentiment scores are making more impactful news!")
+    st.markdown("**💡 Enhanced Features:**")
+    st.markdown("- **11+ News Sources** for comprehensive coverage")
+    st.markdown("- **Custom Financial Lexicon** with 100+ Indian market terms")
+    st.markdown("- **Confidence Scores** showing sentiment unanimity")
+    st.markdown("- **Detailed Metrics** (Positive%, Negative%, Neutral%)")
+    st.markdown("- **Sorted by Impact** - highest sentiment intensity first!")
+    st.markdown("")
+    st.markdown("*Stocks with higher absolute sentiment scores are making more impactful news!*")
 
 if __name__ == "__main__":
     main()
