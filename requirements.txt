@@ -7,3 +7,5 @@ vaderSentiment
 lxml
 pytz
 pytrends
+plotly
+plotly
