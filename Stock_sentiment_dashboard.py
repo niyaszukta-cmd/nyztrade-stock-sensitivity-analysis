@@ -28,28 +28,7 @@ if 'error_logs' not in st.session_state:
     st.session_state.error_logs = []
 
 # Indian stock symbols (NSE)
-DEFAULT_STOCKS = {
-    'RELIANCE.NS': 'Reliance Industries',
-    'TCS.NS': 'Tata Consultancy Services',
-    'HDFCBANK.NS': 'HDFC Bank',
-    'INFY.NS': 'Infosys',
-    'ICICIBANK.NS': 'ICICI Bank',
-    'HINDUNILVR.NS': 'Hindustan Unilever',
-    'ITC.NS': 'ITC Limited',
-    'SBIN.NS': 'State Bank of India',
-    'BHARTIARTL.NS': 'Bharti Airtel',
-    'KOTAKBANK.NS': 'Kotak Mahindra Bank',
-    'LT.NS': 'Larsen & Toubro',
-    'ASIANPAINT.NS': 'Asian Paints',
-    'AXISBANK.NS': 'Axis Bank',
-    'MARUTI.NS': 'Maruti Suzuki',
-    'TITAN.NS': 'Titan Company',
-    'WIPRO.NS': 'Wipro',
-    'ADANIENT.NS': 'Adani Enterprises',
-    'BAJFINANCE.NS': 'Bajaj Finance',
-    'HCLTECH.NS': 'HCL Technologies',
-    'SUNPHARMA.NS': 'Sun Pharma'
-        "$ARLABNC.BO": "ARLABS(80NC)",
+DEFAULT_STOCKS = { "$ARLABNC.BO": "ARLABS(80NC)",
         "$BURRB51.BO": "BURR BROWN I",
         "$DCMTOYN.BO": "DCM TOYOTA N",
         "$MODWONC.BO": "MOD.WOOL(CIS",
