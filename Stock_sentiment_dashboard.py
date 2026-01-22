@@ -166,11 +166,22 @@ COMPANY_SYMBOL_MAP = {
 
 # Helper Functions (defined first)
 def log_error(message):
-    """Log errors for debugging"""
-    timestamp = datetime.now().strftime('%H:%M:%S')
-    st.session_state.error_logs.append(f"[{timestamp}] {message}")
-    if st.session_state.debug_mode:
-        st.warning(f"Debug: {message}")
+    """Log errors for debugging - thread-safe version"""
+    try:
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        log_msg = f"[{timestamp}] {message}"
+        
+        # Try to access session state, but don't fail if we can't (e.g., from thread)
+        if hasattr(st, 'session_state') and 'error_logs' in st.session_state:
+            st.session_state.error_logs.append(log_msg)
+            if st.session_state.get('debug_mode', False):
+                print(f"Debug: {message}")  # Print instead of st.warning in threads
+        else:
+            # Fallback: just print to console
+            print(log_msg)
+    except Exception:
+        # Silently fail if logging doesn't work
+        pass
 
 def extract_stock_symbols_from_text(text):
     """Extract stock symbols from news headline/text"""
@@ -201,7 +212,7 @@ def get_stock_data(symbol, max_retries=3):
                 hist = stock.history(period='1mo', timeout=10)
             
             if hist.empty:
-                log_error(f"{symbol}: No historical data available")
+                print(f"{symbol}: No historical data available")
                 continue
                 
             current_price = hist['Close'].iloc[-1]
@@ -225,7 +236,7 @@ def get_stock_data(symbol, max_retries=3):
             }
             
         except Exception as e:
-            log_error(f"{symbol} attempt {attempt + 1}: {str(e)}")
+            print(f"{symbol} attempt {attempt + 1}: {str(e)}")
             if attempt == max_retries - 1:
                 return None
             continue
@@ -238,7 +249,7 @@ def scrape_trending_stocks_from_news(max_stocks=50):
     """Scrape latest market news and extract stock symbols with sentiment"""
     stock_news_map = {}  # {symbol: [news_items]}
     
-    log_error("Starting news scraping from multiple sources...")
+    print("Starting news scraping from multiple sources...")
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -265,9 +276,9 @@ def scrape_trending_stocks_from_news(max_stocks=50):
                 except:
                     continue
         
-        log_error(f"MoneyControl: Found {len(stock_news_map)} stocks")
+        print(f"MoneyControl: Found {len(stock_news_map)} stocks")
     except Exception as e:
-        log_error(f"MoneyControl scraping failed: {str(e)}")
+        print(f"MoneyControl scraping failed: {str(e)}")
     
     # Source 2: Economic Times Market News
     try:
@@ -290,9 +301,9 @@ def scrape_trending_stocks_from_news(max_stocks=50):
                 except:
                     continue
         
-        log_error(f"Economic Times: Total {len(stock_news_map)} stocks now")
+        print(f"Economic Times: Total {len(stock_news_map)} stocks now")
     except Exception as e:
-        log_error(f"Economic Times scraping failed: {str(e)}")
+        print(f"Economic Times scraping failed: {str(e)}")
     
     # Source 3: Google News for Indian stocks
     try:
@@ -324,11 +335,11 @@ def scrape_trending_stocks_from_news(max_stocks=50):
             
             time.sleep(1)
         
-        log_error(f"Google News: Total {len(stock_news_map)} stocks now")
+        print(f"Google News: Total {len(stock_news_map)} stocks now")
     except Exception as e:
-        log_error(f"Google News scraping failed: {str(e)}")
+        print(f"Google News scraping failed: {str(e)}")
     
-    log_error(f"Final: Found {len(stock_news_map)} unique stocks in news")
+    print(f"Final: Found {len(stock_news_map)} unique stocks in news")
     
     return stock_news_map
 
@@ -409,10 +420,13 @@ def analyze_and_rank_stocks(stock_news_map, sentiment_threshold=0.05):
 def process_stock_with_sentiment(symbol, company_name, sentiment_score, reasons, news_items):
     """Process a stock that was already discovered from news with pre-calculated sentiment"""
     try:
-        stock_data = get_stock_data(symbol)
+        stock_data = None
+        try:
+            stock_data = get_stock_data(symbol)
+        except Exception as e:
+            print(f"Error fetching data for {company_name}: {str(e)}")
         
         if not stock_data:
-            log_error(f"{company_name}: Failed to fetch stock data")
             return {
                 'Company': company_name,
                 'Symbol': symbol.replace('.NS', ''),
@@ -449,7 +463,7 @@ def process_stock_with_sentiment(symbol, company_name, sentiment_score, reasons,
         }
         
     except Exception as e:
-        log_error(f"{company_name}: Complete processing failed - {str(e)}")
+        print(f"Error processing {company_name}: {str(e)}")
         return {
             'Company': company_name,
             'Symbol': symbol.replace('.NS', ''),
@@ -458,9 +472,9 @@ def process_stock_with_sentiment(symbol, company_name, sentiment_score, reasons,
             'Volume': 'N/A',
             'Sentiment Score': round(sentiment_score, 3),
             'Sentiment': 'Error',
-            'Reasons': f'Processing error: {str(e)[:100]}',
+            'Reasons': reasons if reasons else 'Processing error',
             'Market Cap': 'N/A',
-            'News Count': len(news_items),
+            'News Count': len(news_items) if news_items else 0,
             'Status': 'Failed'
         }
 
@@ -584,25 +598,34 @@ def main():
     
     results = []
     with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {
-            executor.submit(
-                process_stock_with_sentiment,
-                stock['symbol'],
-                stock['company'],
-                stock['sentiment_score'],
-                stock['reasons'],
-                stock['news_items']
-            ): stock
-            for stock in top_stocks_by_sentiment
-        }
+        futures = {}
+        for stock in top_stocks_by_sentiment:
+            try:
+                future = executor.submit(
+                    process_stock_with_sentiment,
+                    stock['symbol'],
+                    stock['company'],
+                    stock['sentiment_score'],
+                    stock['reasons'],
+                    stock['news_items']
+                )
+                futures[future] = stock
+            except Exception as e:
+                print(f"Error submitting task for {stock['company']}: {str(e)}")
+                continue
         
         completed = 0
         for future in as_completed(futures):
-            result = future.result()
-            if result:
-                results.append(result)
+            try:
+                result = future.result()
+                if result:
+                    results.append(result)
+            except Exception as e:
+                print(f"Error getting result: {str(e)}")
+            
             completed += 1
-            progress_bar.progress(completed / len(top_stocks_by_sentiment))
+            if len(top_stocks_by_sentiment) > 0:
+                progress_bar.progress(completed / len(top_stocks_by_sentiment))
             status_text.text(f"Processed {completed}/{len(top_stocks_by_sentiment)} stocks")
     
     progress_bar.empty()
