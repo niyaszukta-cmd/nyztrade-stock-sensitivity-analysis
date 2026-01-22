@@ -9,7 +9,12 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
+import pytz
+from pytrends.request import TrendReq
 warnings.filterwarnings('ignore')
+
+# Indian Standard Time
+IST = pytz.timezone('Asia/Kolkata')
 
 # Page configuration
 st.set_page_config(
@@ -133,149 +138,116 @@ if 'debug_mode' not in st.session_state:
 if 'error_logs' not in st.session_state:
     st.session_state.error_logs = []
 
-# Comprehensive mapping of company names to NSE symbols
-COMPANY_SYMBOL_MAP = {
-    # Major indices and bluechips
-    'reliance': 'RELIANCE.NS',
-    'reliance industries': 'RELIANCE.NS',
-    'ril': 'RELIANCE.NS',
-    'tcs': 'TCS.NS',
-    'tata consultancy': 'TCS.NS',
-    'infosys': 'INFY.NS',
-    'infy': 'INFY.NS',
-    'wipro': 'WIPRO.NS',
-    'hcl': 'HCLTECH.NS',
-    'hcl tech': 'HCLTECH.NS',
-    'tech mahindra': 'TECHM.NS',
+# Dynamic Stock Universe - Fetches live NSE stocks
+@st.cache_data(ttl=86400)  # Cache for 24 hours
+def get_nse_stock_list():
+    """Fetch live NSE stock list and create mapping"""
+    stock_map = {}
     
-    # Banks
-    'hdfc bank': 'HDFCBANK.NS',
-    'hdfcbank': 'HDFCBANK.NS',
-    'icici bank': 'ICICIBANK.NS',
-    'icicibank': 'ICICIBANK.NS',
-    'sbi': 'SBIN.NS',
-    'state bank': 'SBIN.NS',
-    'axis bank': 'AXISBANK.NS',
-    'kotak': 'KOTAKBANK.NS',
-    'kotak mahindra': 'KOTAKBANK.NS',
-    'indusind': 'INDUSINDBK.NS',
-    'yes bank': 'YESBANK.NS',
-    'pnb': 'PNB.NS',
-    'punjab national': 'PNB.NS',
-    'bank of baroda': 'BANKBARODA.NS',
+    print("Fetching live NSE stock list...")
     
-    # Auto
-    'maruti': 'MARUTI.NS',
-    'maruti suzuki': 'MARUTI.NS',
-    'tata motors': 'TATAMOTORS.NS',
-    'mahindra': 'M&M.NS',
-    'm&m': 'M&M.NS',
-    'bajaj auto': 'BAJAJ-AUTO.NS',
-    'hero motocorp': 'HEROMOTOCO.NS',
-    'hero': 'HEROMOTOCO.NS',
-    'eicher': 'EICHERMOT.NS',
-    'tvs motor': 'TVSMOTOR.NS',
+    # Method 1: Fetch from NSE India directly
+    try:
+        url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.5',
+        }
+        
+        session = requests.Session()
+        session.get("https://www.nseindia.com", headers=headers, timeout=10)
+        time.sleep(1)
+        
+        response = session.get(url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+            for item in data.get('data', []):
+                symbol = item.get('symbol', '')
+                if symbol:
+                    nse_symbol = f"{symbol}.NS"
+                    # Create multiple variations
+                    company_name = symbol.lower()
+                    stock_map[company_name] = nse_symbol
+                    stock_map[symbol.lower()] = nse_symbol
+            
+            print(f"NSE API: Loaded {len(stock_map)} stock variations")
+    except Exception as e:
+        print(f"NSE API failed: {str(e)}")
     
-    # Pharma
-    'sun pharma': 'SUNPHARMA.NS',
-    'dr reddy': 'DRREDDY.NS',
-    'cipla': 'CIPLA.NS',
-    'lupin': 'LUPIN.NS',
-    'divi': 'DIVISLAB.NS',
-    'biocon': 'BIOCON.NS',
-    'torrent pharma': 'TORNTPHARM.NS',
+    # Method 2: Add major stocks manually as fallback
+    major_stocks = {
+        'reliance': 'RELIANCE.NS', 'ril': 'RELIANCE.NS',
+        'tcs': 'TCS.NS', 'infosys': 'INFY.NS', 'infy': 'INFY.NS',
+        'hdfc bank': 'HDFCBANK.NS', 'hdfcbank': 'HDFCBANK.NS',
+        'icici bank': 'ICICIBANK.NS', 'icicibank': 'ICICIBANK.NS',
+        'sbi': 'SBIN.NS', 'state bank': 'SBIN.NS',
+        'airtel': 'BHARTIARTL.NS', 'bharti airtel': 'BHARTIARTL.NS',
+        'wipro': 'WIPRO.NS', 'hcl': 'HCLTECH.NS', 'hcl tech': 'HCLTECH.NS',
+        'itc': 'ITC.NS', 'maruti': 'MARUTI.NS', 'maruti suzuki': 'MARUTI.NS',
+        'tata motors': 'TATAMOTORS.NS', 'mahindra': 'M&M.NS', 'm&m': 'M&M.NS',
+        'bajaj finance': 'BAJFINANCE.NS', 'bajfinance': 'BAJFINANCE.NS',
+        'asian paints': 'ASIANPAINT.NS', 'titan': 'TITAN.NS',
+        'hindustan unilever': 'HINDUNILVR.NS', 'hul': 'HINDUNILVR.NS',
+        'larsen toubro': 'LT.NS', 'l&t': 'LT.NS', 'lt': 'LT.NS',
+        'sun pharma': 'SUNPHARMA.NS', 'sunpharma': 'SUNPHARMA.NS',
+        'axis bank': 'AXISBANK.NS', 'kotak': 'KOTAKBANK.NS',
+        'adani enterprises': 'ADANIENT.NS', 'adani ports': 'ADANIPORTS.NS',
+        'ntpc': 'NTPC.NS', 'ongc': 'ONGC.NS', 'ioc': 'IOC.NS',
+        'coal india': 'COALINDIA.NS', 'tata steel': 'TATASTEEL.NS',
+        'jsw steel': 'JSWSTEEL.NS', 'hindalco': 'HINDALCO.NS',
+        'bajaj auto': 'BAJAJ-AUTO.NS', 'hero motocorp': 'HEROMOTOCO.NS',
+        'britannia': 'BRITANNIA.NS', 'nestle': 'NESTLEIND.NS',
+        'ultratech': 'ULTRACEMCO.NS', 'grasim': 'GRASIM.NS',
+        'power grid': 'POWERGRID.NS', 'adani power': 'ADANIPOWER.NS',
+        'cipla': 'CIPLA.NS', 'dr reddy': 'DRREDDY.NS', 'lupin': 'LUPIN.NS',
+        'vedanta': 'VEDL.NS', 'nmdc': 'NMDC.NS', 'sail': 'SAIL.NS',
+        'zomato': 'ZOMATO.NS', 'paytm': 'PAYTM.NS', 'nykaa': 'NYKAA.NS',
+        'dmart': 'DMART.NS', 'irctc': 'IRCTC.NS', 'lic': 'LICI.NS',
+        'adani green': 'ADANIGREEN.NS', 'adani transmission': 'ADANITRANS.NS',
+        'tata consumer': 'TATACONSUM.NS', 'trent': 'TRENT.NS',
+        'dabur': 'DABUR.NS', 'marico': 'MARICO.NS',
+        'godrej consumer': 'GODREJCP.NS', 'pidilite': 'PIDILITIND.NS',
+        'berger paints': 'BERGEPAINT.NS', 'havells': 'HAVELLS.NS',
+        'siemens': 'SIEMENS.NS', 'abb': 'ABB.NS', 'bhel': 'BHEL.NS',
+        'indusind': 'INDUSINDBK.NS', 'yes bank': 'YESBANK.NS',
+        'pnb': 'PNB.NS', 'bank of baroda': 'BANKBARODA.NS',
+        'eicher': 'EICHERMOT.NS', 'tvs motor': 'TVSMOTOR.NS',
+        'biocon': 'BIOCON.NS', 'torrent pharma': 'TORNTPHARM.NS',
+        'bpcl': 'BPCL.NS', 'hpcl': 'HPCL.NS', 'gail': 'GAIL.NS',
+        'oil india': 'OIL.NS', 'tata power': 'TATAPOWER.NS',
+        'jindal steel': 'JINDALSTEL.NS', 'ambuja cement': 'AMBUJACEM.NS',
+        'acc': 'ACC.NS', 'sbi life': 'SBILIFE.NS', 'hdfc life': 'HDFCLIFE.NS',
+        'icici lombard': 'ICICIGI.NS', 'bajaj finserv': 'BAJAJFINSV.NS',
+        'shriram finance': 'SHRIRAMFIN.NS', 'policy bazaar': 'POLICYBZR.NS',
+        'vodafone idea': 'IDEA.NS', 'idea': 'IDEA.NS',
+    }
     
-    # FMCG
-    'hindustan unilever': 'HINDUNILVR.NS',
-    'hul': 'HINDUNILVR.NS',
-    'itc': 'ITC.NS',
-    'nestle': 'NESTLEIND.NS',
-    'britannia': 'BRITANNIA.NS',
-    'dabur': 'DABUR.NS',
-    'marico': 'MARICO.NS',
-    'godrej consumer': 'GODREJCP.NS',
+    stock_map.update(major_stocks)
     
-    # Metals & Mining
-    'tata steel': 'TATASTEEL.NS',
-    'jsw steel': 'JSWSTEEL.NS',
-    'hindalco': 'HINDALCO.NS',
-    'vedanta': 'VEDL.NS',
-    'coal india': 'COALINDIA.NS',
-    'nmdc': 'NMDC.NS',
-    'jindal steel': 'JINDALSTEL.NS',
+    # Method 3: Try to fetch from alternative sources
+    try:
+        # Fetch popular stocks from Yahoo Finance screener
+        url = "https://finance.yahoo.com/screener/predefined/ms_basic_materials?offset=0&count=100"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=10)
+        # Parse and add more stocks
+    except:
+        pass
     
-    # Telecom
-    'bharti airtel': 'BHARTIARTL.NS',
-    'airtel': 'BHARTIARTL.NS',
-    'vodafone idea': 'IDEA.NS',
-    'idea': 'IDEA.NS',
-    
-    # Energy & Power
-    'ntpc': 'NTPC.NS',
-    'power grid': 'POWERGRID.NS',
-    'adani power': 'ADANIPOWER.NS',
-    'adani green': 'ADANIGREEN.NS',
-    'tata power': 'TATAPOWER.NS',
-    'ongc': 'ONGC.NS',
-    'oil india': 'OIL.NS',
-    'ioc': 'IOC.NS',
-    'bpcl': 'BPCL.NS',
-    'hpcl': 'HPCL.NS',
-    'gail': 'GAIL.NS',
-    
-    # Adani Group
-    'adani enterprises': 'ADANIENT.NS',
-    'adani ports': 'ADANIPORTS.NS',
-    'adani transmission': 'ADANITRANS.NS',
-    'adani total gas': 'ATGL.NS',
-    'adani wilmar': 'AWL.NS',
-    
-    # Tata Group
-    'tata consumer': 'TATACONSUM.NS',
-    'titan': 'TITAN.NS',
-    'trent': 'TRENT.NS',
-    
-    # Infrastructure & Construction
-    'larsen toubro': 'LT.NS',
-    'l&t': 'LT.NS',
-    'lt': 'LT.NS',
-    'ultratech': 'ULTRACEMCO.NS',
-    'ambuja cement': 'AMBUJACEM.NS',
-    'acc': 'ACC.NS',
-    'grasim': 'GRASIM.NS',
-    
-    # Finance & NBFC
-    'bajaj finance': 'BAJFINANCE.NS',
-    'bajaj finserv': 'BAJAJFINSV.NS',
-    'sbi life': 'SBILIFE.NS',
-    'icici lombard': 'ICICIGI.NS',
-    'hdfc life': 'HDFCLIFE.NS',
-    'lic': 'LICI.NS',
-    'shriram finance': 'SHRIRAMFIN.NS',
-    
-    # Others
-    'asian paints': 'ASIANPAINT.NS',
-    'berger paints': 'BERGEPAINT.NS',
-    'pidilite': 'PIDILITIND.NS',
-    'havells': 'HAVELLS.NS',
-    'siemens': 'SIEMENS.NS',
-    'abb': 'ABB.NS',
-    'dmart': 'DMART.NS',
-    'zomato': 'ZOMATO.NS',
-    'paytm': 'PAYTM.NS',
-    'nykaa': 'NYKAA.NS',
-    'policy bazaar': 'POLICYBZR.NS',
-    'irctc': 'IRCTC.NS',
-    'sail': 'SAIL.NS',
-    'bhel': 'BHEL.NS',
-}
+    print(f"Total stock universe: {len(set(stock_map.values()))} unique stocks")
+    return stock_map
+
+# Get dynamic stock map
+COMPANY_SYMBOL_MAP = get_nse_stock_list()
 
 # Helper Functions (defined first)
 def log_error(message):
-    """Log errors for debugging - thread-safe version"""
+    """Log errors for debugging - thread-safe version with IST"""
     try:
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        log_msg = f"[{timestamp}] {message}"
+        ist_time = datetime.now(IST)
+        timestamp = ist_time.strftime('%H:%M:%S')
+        log_msg = f"[{timestamp} IST] {message}"
         
         # Try to access session state, but don't fail if we can't (e.g., from thread)
         if hasattr(st, 'session_state') and 'error_logs' in st.session_state:
@@ -300,7 +272,147 @@ def extract_stock_symbols_from_text(text):
             if symbol not in found_symbols:
                 found_symbols.append(symbol)
     
+    # Also try to extract direct stock symbols (e.g., "RELIANCE" or "TCS")
+    # Match capital words that could be stock symbols
+    words = re.findall(r'\b[A-Z]{2,12}\b', text)
+    for word in words:
+        potential_symbol = f"{word}.NS"
+        if word.lower() in COMPANY_SYMBOL_MAP:
+            symbol = COMPANY_SYMBOL_MAP[word.lower()]
+            if symbol not in found_symbols:
+                found_symbols.append(symbol)
+    
     return found_symbols
+
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def get_trending_stocks_for_viral_content():
+    """Get trending stocks using Google Trends - Perfect for viral YouTube content!"""
+    trending_data = []
+    
+    print("Fetching trending stocks from Google Trends...")
+    
+    try:
+        pytrends = TrendReq(hl='en-IN', tz=330)  # Indian timezone
+        
+        # Keywords related to Indian stock market
+        stock_keywords = [
+            'Reliance stock',
+            'TCS stock',
+            'Adani stock',
+            'Infosys stock',
+            'HDFC Bank stock',
+            'Tata Motors stock',
+            'Zomato stock',
+            'Paytm stock',
+            'Nifty stocks',
+            'BSE stocks'
+        ]
+        
+        # Get trending searches related to stocks
+        for keyword in stock_keywords:
+            try:
+                pytrends.build_payload([keyword], timeframe='now 7-d', geo='IN')
+                interest_data = pytrends.interest_over_time()
+                
+                if not interest_data.empty:
+                    avg_interest = interest_data[keyword].mean()
+                    latest_interest = interest_data[keyword].iloc[-1]
+                    
+                    # Extract stock symbol from keyword
+                    stock_name = keyword.replace(' stock', '').lower()
+                    symbol = None
+                    for company, sym in COMPANY_SYMBOL_MAP.items():
+                        if stock_name in company or company in stock_name:
+                            symbol = sym
+                            break
+                    
+                    if symbol:
+                        trending_data.append({
+                            'symbol': symbol,
+                            'keyword': keyword,
+                            'avg_interest': avg_interest,
+                            'latest_interest': latest_interest,
+                            'trend_score': latest_interest * 1.5 + avg_interest  # Weighted score
+                        })
+                
+                time.sleep(0.5)  # Respect rate limits
+            except Exception as e:
+                print(f"Error fetching trend for {keyword}: {str(e)}")
+                continue
+        
+        # Get related queries for "Indian stocks"
+        try:
+            pytrends.build_payload(['Indian stocks'], timeframe='now 7-d', geo='IN')
+            related = pytrends.related_queries()
+            
+            if 'Indian stocks' in related and related['Indian stocks']['rising'] is not None:
+                rising_queries = related['Indian stocks']['rising']
+                for _, row in rising_queries.head(20).iterrows():
+                    query = row['query'].lower()
+                    # Try to match with our stock map
+                    for company, symbol in COMPANY_SYMBOL_MAP.items():
+                        if company in query:
+                            # Check if not already in trending_data
+                            if not any(t['symbol'] == symbol for t in trending_data):
+                                trending_data.append({
+                                    'symbol': symbol,
+                                    'keyword': row['query'],
+                                    'avg_interest': row['value'],
+                                    'latest_interest': row['value'],
+                                    'trend_score': row['value']
+                                })
+                            break
+        except Exception as e:
+            print(f"Error fetching related queries: {str(e)}")
+        
+        # Sort by trend score
+        trending_data.sort(key=lambda x: x['trend_score'], reverse=True)
+        
+        print(f"Found {len(trending_data)} trending stocks")
+        return trending_data
+        
+    except Exception as e:
+        print(f"Google Trends failed: {str(e)}")
+        return []
+
+def get_viral_stock_recommendations(news_sentiment_data, trending_data, top_n=10):
+    """Combine sentiment + trends to get viral content recommendations"""
+    viral_scores = []
+    
+    # Create lookup for trending scores
+    trend_lookup = {t['symbol']: t for t in trending_data}
+    
+    for stock in news_sentiment_data:
+        symbol = stock['symbol']
+        
+        # Base score from sentiment
+        sentiment_impact = abs(stock['sentiment_score']) * 100
+        confidence_boost = stock.get('confidence', 0) * 50
+        news_volume_boost = min(stock['news_count'] * 5, 30)
+        
+        # Trend boost if available
+        trend_boost = 0
+        if symbol in trend_lookup:
+            trend_boost = trend_lookup[symbol]['trend_score']
+        
+        # Calculate viral potential score
+        viral_score = sentiment_impact + confidence_boost + news_volume_boost + trend_boost
+        
+        viral_scores.append({
+            'symbol': symbol,
+            'company': stock['company'],
+            'sentiment_score': stock['sentiment_score'],
+            'news_count': stock['news_count'],
+            'trend_score': trend_boost,
+            'viral_score': viral_score,
+            'reasons': stock['reasons'],
+            'confidence': stock.get('confidence', 0)
+        })
+    
+    # Sort by viral score
+    viral_scores.sort(key=lambda x: x['viral_score'], reverse=True)
+    
+    return viral_scores[:top_n]
 
 # Stock Data Functions
 @st.cache_data(ttl=1800)  # Cache for 30 minutes
@@ -878,15 +990,23 @@ def process_stock_with_sentiment(symbol, company_name, sentiment_score, reasons,
 # Main Application
 def main():
     st.title("📊 Dynamic Stock Sentiment Screener")
-    st.markdown("*Discovers trending stocks from live news with sentiment analysis*")
+    st.markdown("*AI-powered sentiment analysis + Google Trends for viral YouTube content*")
     
-    st.info("🔍 This dashboard automatically discovers stocks making news and ranks them by sentiment intensity!")
+    st.info("🔍 Automatically discovers trending stocks from live news with sentiment analysis + 🔥 Viral Content Hunter mode!")
     
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuration")
         
         st.session_state.debug_mode = st.checkbox("🐛 Debug Mode", value=False)
+        
+        # Mode selection
+        st.markdown("### 📊 Dashboard Mode")
+        dashboard_mode = st.radio(
+            "Select Mode",
+            ["Standard Analysis", "🔥 Viral Content Hunter"],
+            help="Viral mode combines sentiment + Google Trends for YouTube content"
+        )
         
         sentiment_threshold = st.slider(
             "Sentiment Threshold",
@@ -930,11 +1050,20 @@ def main():
         
         st.markdown("---")
         st.markdown("**How it works:**")
-        st.markdown("1. 📰 Scrapes latest market news")
-        st.markdown("2. 🔍 Extracts stock mentions")
-        st.markdown("3. 📊 Analyzes news sentiment")
-        st.markdown("4. 📈 Fetches stock data")
-        st.markdown("5. 🎯 Ranks by sentiment")
+        st.markdown("1. 🌐 Fetches live NSE stocks")
+        st.markdown("2. 📰 Scrapes 11+ news sources")
+        st.markdown("3. 🔍 Extracts stock mentions")
+        st.markdown("4. 📊 Analyzes sentiment (VADER)")
+        st.markdown("5. 📈 Fetches market data")
+        st.markdown("6. 🔥 Finds viral opportunities")
+        
+        st.markdown("---")
+        st.markdown("**🔥 Viral Mode Features:**")
+        st.markdown("- Google Trends integration")
+        st.markdown("- Search interest analysis")
+        st.markdown("- Viral score calculation")
+        st.markdown("- Video idea suggestions")
+        st.markdown("- Perfect for YouTube!")
         
         st.markdown("---")
         st.markdown("**Data Sources (11+):**")
@@ -951,11 +1080,17 @@ def main():
         st.markdown("- Google News (5 queries)")
         st.markdown("- Reuters India")
         st.markdown("")
+        st.markdown("🔥 **Trends:**")
+        st.markdown("- Google Trends API")
+        st.markdown("- Search interest data")
+        st.markdown("- Rising queries")
+        st.markdown("")
         st.markdown("📊 **Analysis:**")
         st.markdown("- VADER with Custom")
         st.markdown("  Financial Lexicon")
-        st.markdown("- 100+ Indian market")
-        st.markdown("  specific terms")
+        st.markdown("- 100+ market terms")
+        st.markdown("- IST timestamps")
+        st.markdown("- Dynamic NSE universe")
         
         if st.session_state.error_logs and st.session_state.debug_mode:
             st.markdown("---")
@@ -987,6 +1122,87 @@ def main():
         return
     
     st.success(f"✅ Analyzed **{len(ranked_stocks)}** stocks with sufficient news coverage")
+    
+    # Viral Content Mode
+    if dashboard_mode == "🔥 Viral Content Hunter":
+        st.markdown("---")
+        st.subheader("🔥 Viral Content Hunter - Perfect for YouTube Videos!")
+        st.info("⚡ Combining news sentiment + Google Trends to find viral stock topics!")
+        
+        with st.spinner("Fetching Google Trends data..."):
+            trending_data = get_trending_stocks_for_viral_content()
+        
+        if trending_data:
+            st.success(f"✅ Found {len(trending_data)} trending stocks on Google!")
+            
+            # Get viral recommendations
+            viral_recommendations = get_viral_stock_recommendations(
+                ranked_stocks,
+                trending_data,
+                top_n=15
+            )
+            
+            if viral_recommendations:
+                st.markdown("### 🎬 Top 10 Viral Content Recommendations")
+                st.markdown("*Perfect stocks for creating viral YouTube videos based on sentiment + search trends*")
+                
+                for idx, stock in enumerate(viral_recommendations[:10], 1):
+                    sentiment_emoji = "🚀" if stock['sentiment_score'] > 0.2 else "📈" if stock['sentiment_score'] > 0 else "📉" if stock['sentiment_score'] < -0.2 else "👎"
+                    
+                    with st.expander(
+                        f"**#{idx} {stock['company']}** | Viral Score: {stock['viral_score']:.0f} | {sentiment_emoji}",
+                        expanded=(idx <= 3)
+                    ):
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("Viral Score", f"{stock['viral_score']:.0f}")
+                        with col2:
+                            st.metric("Sentiment", f"{stock['sentiment_score']:.3f}")
+                        with col3:
+                            st.metric("Trend Score", f"{stock['trend_score']:.0f}")
+                        with col4:
+                            st.metric("News Count", stock['news_count'])
+                        
+                        st.markdown("**🎥 Why This Will Go Viral:**")
+                        reasons = []
+                        if abs(stock['sentiment_score']) > 0.3:
+                            reasons.append("✅ Extreme sentiment - people have strong opinions!")
+                        if stock['trend_score'] > 50:
+                            reasons.append("✅ High Google search interest - people are actively searching!")
+                        if stock['news_count'] >= 5:
+                            reasons.append("✅ Heavy news coverage - lots to talk about!")
+                        if stock['confidence'] > 0.7:
+                            reasons.append("✅ Consistent sentiment - clear narrative!")
+                        
+                        for reason in reasons:
+                            st.markdown(reason)
+                        
+                        st.markdown("**📰 News Headlines:**")
+                        st.text_area("", stock['reasons'][:500] + "...", height=150, key=f"viral_{idx}", disabled=True, label_visibility="collapsed")
+                        
+                        st.markdown("**🎬 Video Ideas:**")
+                        if stock['sentiment_score'] > 0.3:
+                            st.markdown("- '🚀 Why [Company] is EXPLODING! Full Analysis'")
+                            st.markdown("- '[Company] Latest News - Should You BUY NOW?'")
+                        elif stock['sentiment_score'] < -0.3:
+                            st.markdown("- '⚠️ WARNING: [Company] - What's Happening?'")
+                            st.markdown("- '[Company] Crisis Explained - Should You SELL?'")
+                        else:
+                            st.markdown("- '[Company] Breaking News - Complete Analysis'")
+                            st.markdown("- 'What Everyone is Missing About [Company]'")
+                
+                # Download viral list
+                st.markdown("---")
+                viral_df = pd.DataFrame(viral_recommendations)
+                csv = viral_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Viral Content List (CSV)",
+                    data=csv,
+                    file_name=f"viral_stocks_{datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+        else:
+            st.warning("Could not fetch Google Trends data. Showing sentiment analysis only.")
     
     # Metrics
     col1, col2, col3 = st.columns(3)
@@ -1174,24 +1390,27 @@ def main():
     col1, col2 = st.columns(2)
     with col1:
         csv = filtered_df.to_csv(index=False)
+        ist_time = datetime.now(IST)
         st.download_button(
             label="📥 Download Screener Results (CSV)",
             data=csv,
-            file_name=f"sentiment_screener_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            file_name=f"sentiment_screener_{ist_time.strftime('%Y%m%d_%H%M%S')}.csv",
             mime="text/csv"
         )
     with col2:
-        st.markdown(f"*Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
+        st.markdown(f"*Last updated: {ist_time.strftime('%Y-%m-%d %H:%M:%S')} IST*")
     
     st.markdown("---")
     st.markdown("**💡 Enhanced Features:**")
+    st.markdown("- **Dynamic Stock Universe** - Auto-discovers stocks from NSE")
     st.markdown("- **11+ News Sources** for comprehensive coverage")
+    st.markdown("- **🔥 Viral Content Hunter** - Google Trends + Sentiment for YouTube")
     st.markdown("- **Custom Financial Lexicon** with 100+ Indian market terms")
+    st.markdown("- **IST Timestamps** - All times in Indian Standard Time")
     st.markdown("- **Confidence Scores** showing sentiment unanimity")
     st.markdown("- **Detailed Metrics** (Positive%, Negative%, Neutral%)")
-    st.markdown("- **Sorted by Impact** - highest sentiment intensity first!")
     st.markdown("")
-    st.markdown("*Stocks with higher absolute sentiment scores are making more impactful news!*")
+    st.markdown("*Perfect for creating viral YouTube content on trending stocks!* 🎬")
 
 if __name__ == "__main__":
     main()
