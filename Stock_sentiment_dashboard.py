@@ -375,6 +375,144 @@ def get_trending_stocks_for_viral_content():
         print(f"Google Trends failed: {str(e)}")
         return []
 
+def generate_youtube_metadata(stock_data, sentiment_score, is_trending=False):
+    """Generate YouTube tags and hashtags for viral content"""
+    company = stock_data['company']
+    symbol = stock_data['symbol'].replace('.NS', '')
+    
+    # Base tags
+    tags = [
+        f"{company}",
+        f"{company} stock",
+        f"{symbol}",
+        f"{symbol} stock",
+        "Indian stock market",
+        "NSE stocks",
+        "stock market news",
+        "stock analysis",
+        "stock market today"
+    ]
+    
+    # Sentiment-based tags
+    if sentiment_score > 0.3:
+        tags.extend([
+            f"{company} rally",
+            f"{company} bullish",
+            "stocks to buy",
+            "best stocks",
+            "stock market rally",
+            "bullish stocks",
+            "stock breakout"
+        ])
+    elif sentiment_score < -0.3:
+        tags.extend([
+            f"{company} crash",
+            f"{company} bearish",
+            "stocks to sell",
+            "stock market crash",
+            "bearish stocks",
+            "stock alert",
+            "stock warning"
+        ])
+    else:
+        tags.extend([
+            f"{company} news",
+            f"{company} update",
+            "stock market analysis",
+            "stock research",
+            "stock market update"
+        ])
+    
+    # Trending tags
+    if is_trending:
+        tags.extend([
+            "trending stocks",
+            "viral stocks",
+            "most searched stocks",
+            "hot stocks"
+        ])
+    
+    # General Indian market tags
+    tags.extend([
+        "NIFTY",
+        "SENSEX",
+        "Indian stocks",
+        "share market",
+        "stock tips",
+        "stock market india",
+        "trading",
+        "investing",
+        "stock news today",
+        "market analysis"
+    ])
+    
+    # Year tag
+    tags.append("2026")
+    
+    # Generate hashtags
+    hashtags = [
+        f"#{company.replace(' ', '')}",
+        f"#{symbol}",
+        "#StockMarket",
+        "#IndianStocks",
+        "#NSE",
+        "#NIFTY",
+        "#SENSEX",
+        "#StockNews",
+        "#Trading",
+        "#Investing"
+    ]
+    
+    # Sentiment-based hashtags
+    if sentiment_score > 0.3:
+        hashtags.extend([
+            "#Bullish",
+            "#StocksToeBuy",
+            "#Rally",
+            "#Breakout",
+            "#StockMarketNews"
+        ])
+    elif sentiment_score < -0.3:
+        hashtags.extend([
+            "#Bearish",
+            "#StockAlert",
+            "#MarketCrash",
+            "#StockWarning"
+        ])
+    else:
+        hashtags.extend([
+            "#StockAnalysis",
+            "#MarketUpdate",
+            "#StockResearch"
+        ])
+    
+    # Trending hashtags
+    if is_trending:
+        hashtags.extend([
+            "#Trending",
+            "#Viral",
+            "#HotStocks"
+        ])
+    
+    # Additional popular hashtags
+    hashtags.extend([
+        "#ShareMarket",
+        "#StockMarketIndia",
+        "#StockTips",
+        "#MarketAnalysis",
+        "#FinancialNews"
+    ])
+    
+    # Remove duplicates and limit
+    tags = list(dict.fromkeys(tags))[:30]  # YouTube allows 500 chars, ~30 tags
+    hashtags = list(dict.fromkeys(hashtags))[:15]  # Keep reasonable amount
+    
+    # Format for copying
+    tags_string = ", ".join(tags)
+    hashtags_string = " ".join(hashtags)
+    
+    return tags_string, hashtags_string
+
 def get_viral_stock_recommendations(news_sentiment_data, trending_data, top_n=10):
     """Combine sentiment + trends to get viral content recommendations"""
     viral_scores = []
@@ -1063,6 +1201,9 @@ def main():
         st.markdown("- Search interest analysis")
         st.markdown("- Viral score calculation")
         st.markdown("- Video idea suggestions")
+        st.markdown("- **YouTube tags (copyable)**")
+        st.markdown("- **Hashtags (copyable)**")
+        st.markdown("- **Description template**")
         st.markdown("- Perfect for YouTube!")
         
         st.markdown("---")
@@ -1190,7 +1331,57 @@ def main():
                         else:
                             st.markdown("- '[Company] Breaking News - Complete Analysis'")
                             st.markdown("- 'What Everyone is Missing About [Company]'")
-                
+                        
+                        # Generate YouTube metadata
+                        is_trending = stock['trend_score'] > 50
+                        tags_string, hashtags_string = generate_youtube_metadata(
+                            stock,
+                            stock['sentiment_score'],
+                            is_trending
+                        )
+                        
+                        st.markdown("---")
+                        st.markdown("**📋 COPYABLE CONTENT (Click to Select & Copy)**")
+                        
+                        # YouTube Tags
+                        st.markdown("**🏷️ YouTube Tags:**")
+                        st.code(tags_string, language=None)
+                        st.caption("📌 Copy & paste into YouTube video tags (SEO optimized)")
+                        
+                        # Hashtags
+                        st.markdown("**#️⃣ Hashtags:**")
+                        st.code(hashtags_string, language=None)
+                        st.caption("📌 Use in video description, Twitter, Instagram, LinkedIn")
+                        
+                        # Quick Copy Description Template
+                        st.markdown("**📝 Complete Video Description Template:**")
+                        description_template = f"""🔥 {stock['company']} Latest News & Analysis | Stock Market Update
+
+In this video, we analyze the latest news around {stock['company']} ({stock['symbol'].replace('.NS', '')}) with complete analysis.
+
+📊 Viral Score: {stock['viral_score']:.0f}
+📈 Sentiment Score: {stock['sentiment_score']:.3f}
+📰 News Coverage: {stock['news_count']} items
+🔥 Google Trends: {stock['trend_score']:.0f}
+
+⏰ Timestamps:
+0:00 - Introduction
+0:30 - Latest News Update
+2:00 - Sentiment Analysis
+4:00 - Technical Overview
+6:00 - Final Thoughts & Action Plan
+
+💡 Like, Share & Subscribe for daily stock market updates!
+🔔 Turn on notifications for breaking market news!
+
+{hashtags_string}
+
+⚠️ Disclaimer: This is for educational purposes only. Not financial advice. Do your own research.
+
+Tags: {tags_string[:200]}...
+"""
+                        st.text_area("", description_template, height=280, key=f"desc_{idx}", label_visibility="collapsed")
+                        st.caption("📌 Complete ready-to-use video description - just copy & paste!")
                 # Download viral list
                 st.markdown("---")
                 viral_df = pd.DataFrame(viral_recommendations)
@@ -1405,12 +1596,14 @@ def main():
     st.markdown("- **Dynamic Stock Universe** - Auto-discovers stocks from NSE")
     st.markdown("- **11+ News Sources** for comprehensive coverage")
     st.markdown("- **🔥 Viral Content Hunter** - Google Trends + Sentiment for YouTube")
+    st.markdown("- **📋 Copyable Content** - YouTube tags, hashtags & description templates")
     st.markdown("- **Custom Financial Lexicon** with 100+ Indian market terms")
     st.markdown("- **IST Timestamps** - All times in Indian Standard Time")
     st.markdown("- **Confidence Scores** showing sentiment unanimity")
     st.markdown("- **Detailed Metrics** (Positive%, Negative%, Neutral%)")
     st.markdown("")
-    st.markdown("*Perfect for creating viral YouTube content on trending stocks!* 🎬")
+    st.markdown("*Perfect for creating viral YouTube content on trending stocks! 🎬*")
+    st.markdown("*Just copy tags, hashtags & description - publish in minutes!*")
 
 if __name__ == "__main__":
     main()
